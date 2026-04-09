@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+dist/
+build/
+*.so
+
+# Node
+node_modules/
+.next/
+out/
+dist/
+build/
+.npm/
+*.tsbuildinfo
+
+# Environment — never commit real env files
+.env
+.env.local
+.env.prod
+.env.staging
+*.env
+!.env.local.example
+!.env.prod.example
+
+# Data archive — too large for git
+openrights-data-archive/
+
+# Docker volumes
+volumes/
+
+# Database
+*.sql.bak
+*.dump
+
+# IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Secrets
+*.pem
+*.key
+*.cert
+acme.json

@@ -1,0 +1,16 @@
+name: Build and Push DB Image
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build & Push
+        run: |
+          docker build -t localhost:5000/casetally-db:latest .
+          docker push localhost:5000/casetally-db:latest

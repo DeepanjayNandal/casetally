@@ -24,11 +24,11 @@ A legal research platform that lets you search and chat with US federal law usin
 
 ```
 casetally/
-├── openrights-backend/     # FastAPI REST + SSE streaming API
-├── openrights-frontend/    # Next.js web app
-├── openrights-workers/     # Embedding generation worker
-├── openrights-db/          # PostgreSQL schema and migrations
-└── openrights-ingestion/   # Legal data ingestion CLI
+├── casetally-backend/     # FastAPI REST + SSE streaming API
+├── casetally-frontend/    # Next.js web app
+├── casetally-workers/     # Embedding generation worker
+├── casetally-db/          # PostgreSQL schema and migrations
+└── casetally-ingestion/   # Legal data ingestion CLI
 ```
 
 ## Local development

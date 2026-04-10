@@ -1,4 +1,4 @@
-# OpenRights Ingestion Service
+# CaseTally Ingestion Service
 
 Ingestion microservice for loading legal source data into the citation-centric database schema.
 
@@ -66,7 +66,7 @@ Operational behavior:
 - Finds `*.html` files
 - Extracts title numbers from filenames
 - Parses sections from `<h3 class="section-head">`
-- Builds citations like `<title> U.S.C. § <section>`
+- Builds citations like `<title> U.S.C. ï¿½ <section>`
 - Attempts to map matching title PDF files
 - Emits optional PDF page hints from HTML comment markers
 

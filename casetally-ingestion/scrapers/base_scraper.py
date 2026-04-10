@@ -19,7 +19,7 @@ class BaseScraperConfig:
         base_url: str,
         rate_limit: float = 1.0,  # Requests per second
         timeout: int = 30,
-        user_agent: str = "OpenRights Legal Research Bot/1.0"
+        user_agent: str = "CaseTally Legal Research Bot/1.0"
     ):
         self.base_url = base_url
         self.rate_limit = rate_limit

@@ -44,7 +44,7 @@ def configure_logging(verbose: bool = False):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='OpenRights Legal Document Ingestion Service'
+        description='CaseTally Legal Document Ingestion Service'
     )
     
     parser.add_argument(
@@ -57,7 +57,7 @@ def main():
     parser.add_argument(
         '--data-dir',
         type=Path,
-        default=Path(os.getenv('OPENRIGHTS_DATA_DIR', '/data')),
+        default=Path(os.getenv('CASETALLY_DATA_DIR', '/data')),
         help='Data directory path'
     )
     

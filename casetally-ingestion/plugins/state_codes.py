@@ -74,7 +74,7 @@ class CaliforniaCodesIngestor(StateCodesIngestor):
         config = BaseScraperConfig(
             base_url="https://leginfo.legislature.ca.gov",
             rate_limit=1.0,  # 1 request per second
-            user_agent="OpenRights California Codes Bot/1.0"
+            user_agent="CaseTally California Codes Bot/1.0"
         )
         
         # TODO: Create California-specific scraper

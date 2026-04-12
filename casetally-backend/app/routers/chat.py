@@ -13,12 +13,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
 
 from app.db import SessionLocal, get_db
-from app.services.ollama_service import OllamaService
+from app.services.groq_service import GroqService
 from app.services.search import HybridSearchService
 
 router = APIRouter(prefix="/v1", tags=["chat"])
 search_service = HybridSearchService()
-ollama_service = OllamaService()
+ollama_service = GroqService()
 
 logger = logging.getLogger(__name__)
 

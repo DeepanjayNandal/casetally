@@ -118,9 +118,48 @@
   grid-template-columns: repeat(3, 1fr);
   gap: 24px;
 }
+/* show-mobile: hidden by default, visible only on mobile */
+.show-mobile {
+  display: none;
+}
+
 @media (max-width: 767px) {
   .how-it-works-grid {
     grid-template-columns: 1fr;
+  }
+  .hidden-mobile {
+    display: none;
+  }
+  .show-mobile {
+    display: inline;
+  }
+  /* Hero: remove fixed min-height, use natural padding instead */
+  #main-content.hero-main {
+    min-height: unset !important;
+    padding-top: 64px !important;
+    padding-bottom: 64px !important;
+    justify-content: flex-start !important;
+  }
+  /* Search results — stack answer above sources */
+  .search-two-col {
+    grid-template-columns: 1fr !important;
+  }
+  /* Sources panel — remove sticky on mobile */
+  .sources-panel {
+    position: static !important;
+  }
+  /* Browse page — stack sidebar above list */
+  .browse-layout {
+    grid-template-columns: 1fr !important;
+    height: auto !important;
+  }
+  .browse-sidebar {
+    height: 200px;
+    border-right: none !important;
+    border-bottom: 1px solid hsl(var(--border-subtle));
+  }
+  .browse-right {
+    height: auto !important;
   }
 }
 
@@ -207,14 +246,15 @@
 .dot-loader span:nth-child(2) { animation-delay: 0.2s; }
 .dot-loader span:nth-child(3) { animation-delay: 0.4s; }
 
-/* Citation badge hover */
+/* Citation badge chip */
 .citation-badge {
   display: inline-flex;
   align-items: center;
   font-size: 12px;
   font-family: 'Courier New', monospace;
   background: hsl(var(--accent-muted));
-  color: hsl(var(--text-primary));
+  color: hsl(var(--accent-glow));
+  border: 1px solid hsl(var(--accent) / 0.3);
   border-radius: 4px;
   padding: 1px 6px 2px;
   cursor: pointer;
@@ -224,7 +264,7 @@
   top: -1px;
 }
 .citation-badge:hover {
-  transform: scale(1.05);
+  transform: scale(1.03);
   filter: brightness(1.2);
 }
 

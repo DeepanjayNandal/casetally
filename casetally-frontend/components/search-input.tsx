@@ -60,6 +60,7 @@ export function SearchInput({
         gap: "12px",
         transition: "border-color 0.2s ease, box-shadow 0.2s ease",
         background: "hsl(220 18% 8%)",
+        boxShadow: "inset 0 1px 3px hsl(220 30% 2% / 0.5)",
         backdropFilter: "blur(var(--glass-blur))",
         WebkitBackdropFilter: "blur(var(--glass-blur))",
       }}
@@ -68,6 +69,7 @@ export function SearchInput({
 
       <input
         ref={inputRef}
+        id={size === "lg" ? "main-search" : undefined}
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -101,10 +103,8 @@ export function SearchInput({
           border: "none",
           background: showStop
             ? "hsl(var(--bg-surface))"
-            : canSubmit
-            ? "hsl(var(--accent))"
-            : "hsl(var(--bg-surface))",
-          color: showStop ? "hsl(var(--text-secondary))" : "white",
+            : "hsl(var(--accent))",
+          color: "white",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",

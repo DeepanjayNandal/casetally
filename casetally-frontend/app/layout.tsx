@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import { Newsreader, Inter } from 'next/font/google'
 import './globals.css'
+import { KeyboardShortcuts } from '@/components/keyboard-shortcuts'
 
 const newsreader = Newsreader({
   subsets: ['latin'],
@@ -19,8 +20,11 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: 'CaseTally — AI Legal Research',
-  description: 'Search the entire U.S. Code using natural language. Get answers with exact citations.',
+  description: 'Search the entire U.S. Code using natural language. Get grounded, cited answers with exact statute citations.',
   keywords: ['legal research', 'US Code', 'federal law', 'AI', 'citations'],
+  icons: {
+    icon: '/favicon.svg',
+  },
 }
 
 export default function RootLayout({
@@ -32,6 +36,7 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <body className={`${newsreader.variable} ${inter.variable}`}>
         <a href="#main-content" className="skip-link">Skip to content</a>
+        <KeyboardShortcuts />
         {children}
       </body>
     </html>

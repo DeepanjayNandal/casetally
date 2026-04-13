@@ -14,7 +14,6 @@ const SAMPLE_QUERIES = [
   "Patent eligibility requirements",
   "First Amendment protections",
   "Federal tax brackets",
-  "Immigration asylum process",
 ]
 
 export default function HomePage() {
@@ -46,6 +45,7 @@ export default function HomePage() {
       {/* Hero — true center, no excess top padding */}
       <main
         id="main-content"
+        className="hero-main"
         style={{
           flex: 1,
           display: "flex",
@@ -53,7 +53,7 @@ export default function HomePage() {
           alignItems: "center",
           justifyContent: "center",
           padding: "0 20px 48px",
-          minHeight: "calc(100vh - 64px)",
+          minHeight: "calc(100vh - 64px)", /* overridden on mobile via CSS */
         }}
       >
         {/* Trust badge */}
@@ -108,7 +108,7 @@ export default function HomePage() {
           exact citations.
         </p>
 
-        {/* Search bar */}
+        {/* Search bar + hint */}
         <div
           className="fade-up fade-up-4"
           style={{ width: "100%", maxWidth: "680px", marginBottom: "20px" }}
@@ -121,6 +121,19 @@ export default function HomePage() {
             placeholder="e.g., What are the requirements for patent eligibility?"
             autoFocus
           />
+          {/* Press / hint — visually attached to bar, desktop only */}
+          <div style={{ textAlign: "right", marginTop: "6px" }}>
+            <span
+              className="hidden-mobile"
+              style={{
+                fontSize: "12px",
+                color: "hsl(var(--text-muted))",
+                fontFamily: "var(--font-inter), system-ui, sans-serif",
+              }}
+            >
+              Press <kbd style={{ fontFamily: "monospace", background: "hsl(var(--bg-surface))", border: "1px solid hsl(var(--border-subtle))", borderRadius: "4px", padding: "1px 5px", fontSize: "11px" }}>/</kbd> to search
+            </span>
+          </div>
         </div>
 
         {/* Sample query chips */}

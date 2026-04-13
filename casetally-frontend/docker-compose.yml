@@ -1,0 +1,20 @@
+version: '3.8'
+services:
+  web:
+    build:
+      context: .
+    image: casetally-frontend:dev
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - ./:/app:cached
+      - /app/node_modules
+    command: ["npm", "run", "dev", "--", "-H", "0.0.0.0"]
+    # Use an env_file or environment section to pass secrets/config
+    # env_file: .env
+
+# Usage:
+#  docker compose up --build
+# Access dev server on http://localhost:3000

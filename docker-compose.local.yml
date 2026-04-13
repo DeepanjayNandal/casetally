@@ -2,7 +2,7 @@ services:
 
   postgres:
     build:
-      context: ./casetally-db/casetally-db
+      context: ./casetally-db
     platform: linux/arm64
     container_name: casetally-postgres
     restart: unless-stopped
@@ -45,6 +45,8 @@ services:
       - redis_data:/data
     networks:
       - casetally-network
+    ports:
+      - "6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -66,7 +68,7 @@ services:
 
   backend:
     build:
-      context: ./casetally-backend/casetally-backend
+      context: ./casetally-backend
     platform: linux/arm64
     container_name: casetally-backend
     restart: unless-stopped
@@ -75,8 +77,10 @@ services:
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
       - EMBEDDING_DEVICE=cpu
       - SEARCH_EMBEDDING_ENABLED=${SEARCH_EMBEDDING_ENABLED:-true}
-      - OLLAMA_URL=${OLLAMA_URL:-http://casetally-ollama:11434}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma2:2b}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_MODEL=${GROQ_MODEL:-llama-3.1-8b-instant}
+    volumes:
+      - ./casetally-backend/app:/app/app
     ports:
       - "3001:3001"
     networks:
@@ -84,12 +88,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      ollama:
-        condition: service_healthy
 
   frontend:
     build:
-      context: ./casetally-frontend/casetally-frontend
+      context: ./casetally-frontend
       args:
         - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-http://localhost:3001}
     platform: linux/arm64
@@ -106,7 +108,7 @@ services:
 
   worker:
     build:
-      context: ./casetally-workers/casetally-workers
+      context: ./casetally-workers
     platform: linux/arm64
     container_name: casetally-worker
     restart: unless-stopped
@@ -126,30 +128,11 @@ services:
       redis:
         condition: service_healthy
 
-  ollama:
-    image: ollama/ollama:latest
-    platform: linux/arm64
-    container_name: casetally-ollama
-    restart: unless-stopped
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    networks:
-      - casetally-network
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
 volumes:
   postgres_data:
     name: casetally_postgres_data_local
   redis_data:
     name: casetally_redis_data_local
-  ollama_data:
-    name: casetally_ollama_data_local
 
 networks:
   casetally-network:

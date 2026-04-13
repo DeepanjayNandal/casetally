@@ -1,9 +1,10 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { ChevronRight, BookOpen } from "lucide-react"
+import { ChevronRight, BookOpen, FileX } from "lucide-react"
 import { Nav } from "@/components/nav"
 import { Footer } from "@/components/footer"
+import { LegalTextRenderer } from "@/components/legal-text-renderer"
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001"
 
@@ -123,6 +124,7 @@ export default function CodePage() {
 
       <main
         id="main-content"
+        className="browse-layout"
         style={{
           flex: 1,
           paddingTop: "64px",
@@ -133,6 +135,7 @@ export default function CodePage() {
       >
         {/* Left — Title list */}
         <div
+          className="browse-sidebar"
           style={{
             borderRight: `1px solid hsl(var(--border-subtle))`,
             overflowY: "auto",
@@ -225,13 +228,15 @@ export default function CodePage() {
         </div>
 
         {/* Right — Sections or reading pane */}
-        <div style={{ display: "grid", gridTemplateColumns: selectedChunk ? "1fr 1fr" : "1fr", height: "100%", overflow: "hidden" }}>
+        <div className="browse-right" style={{ display: "flex", height: "100%", overflow: "hidden" }}>
           {/* Sections list */}
           <div
             style={{
+              flex: selectedChunk ? "0 0 45%" : "1 1 100%",
               overflowY: "auto",
               padding: "24px",
               borderRight: selectedChunk ? `1px solid hsl(var(--border-subtle))` : "none",
+              transition: "flex 0.2s ease",
             }}
           >
             {!selectedTitle && (
@@ -298,10 +303,13 @@ export default function CodePage() {
                   </div>
                 )}
 
-                {!loading && results.length === 0 && (
-                  <p style={{ fontSize: "14px", color: "hsl(var(--text-muted))", fontFamily: "var(--font-inter), system-ui, sans-serif" }}>
-                    No sections found for this title in the database.
-                  </p>
+                {!loading && results.length === 0 && selectedTitle && (
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "12px", padding: "48px 0", textAlign: "center" }}>
+                    <FileX size={48} style={{ color: "hsl(var(--text-muted))", opacity: 0.5 }} />
+                    <p style={{ fontSize: "14px", color: "hsl(var(--text-muted))", fontFamily: "var(--font-inter), system-ui, sans-serif" }}>
+                      No sections found for this title.
+                    </p>
+                  </div>
                 )}
 
                 {!loading && results.map((r) => (
@@ -342,16 +350,6 @@ export default function CodePage() {
                     <div>
                       <p
                         style={{
-                          fontSize: "11px",
-                          fontFamily: "'Courier New', monospace",
-                          color: "hsl(var(--accent))",
-                          marginBottom: "4px",
-                        }}
-                      >
-                        {r.citation}
-                      </p>
-                      <p
-                        style={{
                           fontSize: "13px",
                           fontWeight: 500,
                           color: "hsl(var(--text-primary))",
@@ -384,17 +382,7 @@ export default function CodePage() {
 
           {/* Reading pane */}
           {selectedChunk && (
-            <div style={{ overflowY: "auto", padding: "28px 32px" }}>
-              <p
-                style={{
-                  fontSize: "11px",
-                  fontFamily: "'Courier New', monospace",
-                  color: "hsl(var(--accent))",
-                  marginBottom: "6px",
-                }}
-              >
-                {selectedChunk.citation}
-              </p>
+            <div style={{ flex: "0 0 55%", overflowY: "auto", padding: "28px 32px" }}>
               <h3
                 style={{
                   fontFamily: "var(--font-newsreader), Georgia, serif",
@@ -408,17 +396,7 @@ export default function CodePage() {
               >
                 {selectedChunk.title}
               </h3>
-              <div
-                style={{
-                  fontSize: "15px",
-                  lineHeight: 1.8,
-                  color: "hsl(var(--text-secondary))",
-                  fontFamily: "var(--font-inter), system-ui, sans-serif",
-                  whiteSpace: "pre-wrap",
-                }}
-              >
-                {selectedChunk.text_content}
-              </div>
+              <LegalTextRenderer text={selectedChunk.text_content} />
             </div>
           )}
         </div>

@@ -13,8 +13,15 @@ export function StreamingText({ text, isStreaming }: StreamingTextProps) {
     window.dispatchEvent(new CustomEvent("cite-click", { detail: { ref } }))
   }
 
+  // Strip "Key Statutory Language" section if model didn't return a real blockquote
+  // Keep only if there's a "> quote" immediately after the heading
+  const cleanText = text.replace(
+    /\*\*Key Statutory Language\*\*\s*\n+(?!>)([^\n*].*\n?)*/gi,
+    ""
+  )
+
   // Append cursor placeholder while streaming so markdown parser sees clean text
-  const displayText = isStreaming ? text + "\u200B" : text
+  const displayText = isStreaming ? cleanText + "\u200B" : cleanText
 
   return (
     <div

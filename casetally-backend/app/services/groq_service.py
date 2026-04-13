@@ -6,23 +6,39 @@ from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_PROMPT = """You are a precise legal research assistant for CaseTally.
-Answer the user's question using ONLY the legal text excerpts provided below.
-Always cite the specific statute or section (e.g. "Under 42 U.S.C. § 1983...").
-If the excerpts do not contain enough information to answer, say so clearly.
-Do not speculate or add information not present in the excerpts."""
+_SYSTEM_PROMPT = """You are a precise legal research assistant for CaseTally. Answer using ONLY the provided legal excerpts — never add outside knowledge.
+
+Reply in this exact format every time:
+
+**Short Answer**
+1-2 sentences directly answering the question. If the excerpts lack sufficient information, state that clearly.
+
+**Relevant Statutes**
+- [Title] U.S.C. § [Section] — [one-line description of what it covers]
+
+**Analysis**
+3-4 sentences. Explain how each cited statute applies to the question. Reference section numbers inline (e.g. "Under 18 U.S.C. § 1343..."). Be specific — state what the law requires, prohibits, or permits.
+
+**Key Statutory Language**
+> [The single most relevant direct quote from the excerpts]
+
+**Limitation**
+This summarizes retrieved statutory text only and is not legal advice."""
 
 
 def _build_context(results: List[Dict[str, Any]]) -> str:
     parts = []
     for i, r in enumerate(results, 1):
-        parts.append(f"[{i}] {r['citation']}\n{r['text_content']}")
+        # Use snippet (~100 tokens) not text_content (~500 tokens) to save tokens.
+        # Full text is served separately to the frontend via /v1/search.
+        text = r.get("snippet") or r.get("text_content", "")
+        parts.append(f"[{i}] {r['citation']}\n{text}")
     return "\n\n---\n\n".join(parts)
 
 
 class GroqService:
     def __init__(self):
-        self.model = os.getenv("GROQ_MODEL", "llama3-8b-8192")
+        self.model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
         self.client = OpenAI(
             api_key=os.getenv("GROQ_API_KEY"),
             base_url="https://api.groq.com/openai/v1",
@@ -56,7 +72,7 @@ class GroqService:
             messages=messages,
             stream=True,
             temperature=0.1,
-            max_tokens=512,
+            max_tokens=1024,
         )
 
         for chunk in stream:

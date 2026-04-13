@@ -52,9 +52,9 @@ def _stream(query: str, history: List[Dict[str, Any]]):
         results = search_service.search(
             db=db,
             query=query,
-            top_k=5,
-            bm25_k=50,
-            vector_k=50,
+            top_k=3,
+            bm25_k=30,
+            vector_k=30,
             weight_bm25=0.5,
             weight_vector=0.5,
         )
@@ -65,12 +65,11 @@ def _stream(query: str, history: List[Dict[str, Any]]):
                 for token in ollama_service.stream_answer(query, chunks, history):
                     yield _event(json.dumps({"type": "text", "chunk": token}))
             except Exception as exc:
-                logger.warning("Ollama stream failed, falling back to snippets: %s", exc)
-                for result in chunks:
-                    yield _event(json.dumps({
-                        "type": "text",
-                        "chunk": f"{result['citation']}: {result['snippet']}",
-                    }))
+                logger.warning("Groq stream failed: %s", exc)
+                yield _event(json.dumps({
+                    "type": "text",
+                    "chunk": "The AI assistant is temporarily unavailable. Please try again in a moment.",
+                }))
         else:
             for result in chunks:
                 yield _event(json.dumps({

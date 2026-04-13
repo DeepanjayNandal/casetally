@@ -82,7 +82,8 @@ export function StreamingText({ text, isStreaming }: StreamingTextProps) {
               if (typeof node === "string") return node
               if (Array.isArray(node)) return node.map(extractText).join("")
               if (node && typeof node === "object" && "props" in (node as object)) {
-                return extractText((node as React.ReactElement).props.children)
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                return extractText((node as any).props.children)
               }
               return ""
             }

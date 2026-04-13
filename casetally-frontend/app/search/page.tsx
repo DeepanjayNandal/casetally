@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef, useCallback, Suspense } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
-import { Sparkles, BookOpen, AlertTriangle, RefreshCcw } from "lucide-react"
+import { Sparkles, BookOpen, AlertCircle, RefreshCcw, SearchX } from "lucide-react"
 import { Nav } from "@/components/nav"
 import { Footer } from "@/components/footer"
 import { SearchInput } from "@/components/search-input"
@@ -255,6 +255,7 @@ function SearchResults() {
       >
         {/* Two-column layout */}
         <div
+          className="search-two-col"
           style={{
             display: "grid",
             gridTemplateColumns: "minmax(0, 1.9fr) minmax(0, 1fr)",
@@ -307,6 +308,8 @@ function SearchResults() {
                     <ErrorCard message={turn.error} onRetry={() => runSearch(turn.query)} />
                   ) : turn.isLoading ? (
                     <SkeletonAnswer />
+                  ) : !turn.isStreaming && !turn.answer.trim() ? (
+                    <NoResultsCard />
                   ) : (
                     <StreamingText text={turn.answer} isStreaming={turn.isStreaming} />
                   )}
@@ -366,7 +369,7 @@ function SearchResults() {
           </div>
 
           {/* RIGHT — Sources (always latest turn) */}
-          <div style={{ position: "sticky", top: "80px" }}>
+          <div className="sources-panel" style={{ position: "sticky", top: "80px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px" }}>
               <BookOpen size={16} style={{ color: "hsl(var(--accent))" }} />
               <h2
@@ -452,29 +455,55 @@ function SearchResults() {
 
 function ErrorCard({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "12px", padding: "4px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-        <AlertTriangle size={16} style={{ color: "hsl(var(--error))" }} />
-        <span style={{ fontSize: "14px", color: "hsl(var(--text-secondary))", fontFamily: "var(--font-inter), system-ui, sans-serif" }}>
-          {message}
-        </span>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "16px", padding: "24px 0", textAlign: "center" }}>
+      <AlertCircle size={48} style={{ color: "hsl(0 65% 55%)", opacity: 0.9 }} />
+      <div>
+        <h3 style={{ fontFamily: "var(--font-newsreader), Georgia, serif", fontSize: "18px", fontWeight: 500, color: "hsl(var(--text-primary))", marginBottom: "6px" }}>
+          Something went wrong
+        </h3>
+        <p style={{ fontSize: "14px", color: "hsl(var(--text-muted))", fontFamily: "var(--font-inter), system-ui, sans-serif" }}>
+          {message || "Unable to connect to the search service. Please try again."}
+        </p>
       </div>
       <button
         type="button"
         onClick={onRetry}
         style={{
           display: "inline-flex", alignItems: "center", gap: "6px",
-          padding: "6px 14px", border: `1px solid hsl(var(--border-interactive))`,
-          borderRadius: "6px", background: "none", color: "hsl(var(--text-secondary))",
+          padding: "8px 20px", border: `1px solid hsl(var(--accent))`,
+          borderRadius: "8px", background: "none", color: "hsl(var(--accent))",
           fontSize: "13px", fontFamily: "var(--font-inter), system-ui, sans-serif",
-          cursor: "pointer", alignSelf: "flex-start", transition: "border-color 0.15s ease, color 0.15s ease",
+          cursor: "pointer", transition: "background 0.15s ease",
         }}
-        onMouseEnter={(e) => { e.currentTarget.style.borderColor = "hsl(var(--accent))"; e.currentTarget.style.color = "hsl(var(--text-primary))" }}
-        onMouseLeave={(e) => { e.currentTarget.style.borderColor = "hsl(var(--border-interactive))"; e.currentTarget.style.color = "hsl(var(--text-secondary))" }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = "hsl(var(--accent) / 0.1)" }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = "none" }}
       >
         <RefreshCcw size={13} />
         Try again
       </button>
+    </div>
+  )
+}
+
+function NoResultsCard() {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "16px", padding: "24px 0", textAlign: "center" }}>
+      <SearchX size={48} style={{ color: "hsl(var(--text-muted))", opacity: 0.7 }} />
+      <div>
+        <h3 style={{ fontFamily: "var(--font-newsreader), Georgia, serif", fontSize: "18px", fontWeight: 500, color: "hsl(var(--text-secondary))", marginBottom: "6px" }}>
+          No matching sections found
+        </h3>
+        <p style={{ fontSize: "14px", color: "hsl(var(--text-muted))", fontFamily: "var(--font-inter), system-ui, sans-serif" }}>
+          Try rephrasing your query or using different legal terms.
+        </p>
+      </div>
+      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "center" }}>
+        {["Try broader terms", "Check spelling", "Use legal terminology"].map((s) => (
+          <span key={s} style={{ fontSize: "12px", padding: "4px 12px", border: "1px solid hsl(var(--border-subtle))", borderRadius: "999px", color: "hsl(var(--text-muted))", fontFamily: "var(--font-inter), system-ui, sans-serif" }}>
+            {s}
+          </span>
+        ))}
+      </div>
     </div>
   )
 }

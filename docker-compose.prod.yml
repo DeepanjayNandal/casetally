@@ -1,0 +1,131 @@
+services:
+
+  postgres:
+    build:
+      context: ./casetally-db/casetally-db
+    container_name: casetally-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: casetally
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: casetally_law
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - casetally-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U casetally -d casetally_law"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:alpine
+    container_name: casetally-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - casetally-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./casetally-backend/casetally-backend
+    container_name: casetally-backend
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://casetally:${POSTGRES_PASSWORD}@casetally-postgres:5432/casetally_law
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      - EMBEDDING_DEVICE=cpu
+      - SEARCH_EMBEDDING_ENABLED=${SEARCH_EMBEDDING_ENABLED:-true}
+      - OLLAMA_URL=${OLLAMA_URL:-http://casetally-ollama:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma2:2b}
+    networks:
+      - casetally-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`api.casetally.io`)"
+      - "traefik.http.routers.backend.entrypoints=websecure"
+      - "traefik.http.routers.backend.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.backend.middlewares=secure-headers@file"
+      - "traefik.http.services.backend.loadbalancer.server.port=3001"
+
+  frontend:
+    build:
+      context: ./casetally-frontend/casetally-frontend
+      args:
+        - NEXT_PUBLIC_BACKEND_URL=https://api.casetally.io
+    container_name: casetally-frontend
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+    networks:
+      - casetally-network
+    depends_on:
+      - backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=Host(`app.casetally.io`)"
+      - "traefik.http.routers.frontend.entrypoints=websecure"
+      - "traefik.http.routers.frontend.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.frontend.middlewares=secure-headers@file"
+      - "traefik.http.services.frontend.loadbalancer.server.port=3000"
+
+  worker:
+    build:
+      context: ./casetally-workers/casetally-workers
+    container_name: casetally-worker
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://casetally:${POSTGRES_PASSWORD}@casetally-postgres:5432/casetally_law
+      - REDIS_HOST=casetally-redis
+      - REDIS_PORT=6379
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      - EMBEDDING_DEVICE=cpu
+      - BATCH_SIZE=${WORKER_BATCH_SIZE:-100}
+      - POLL_INTERVAL=${WORKER_POLL_INTERVAL:-5}
+    networks:
+      - casetally-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: casetally-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - casetally-network
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+volumes:
+  postgres_data:
+    name: casetally_postgres_data_prod
+  redis_data:
+    name: casetally_redis_data_prod
+  ollama_data:
+    name: casetally_ollama_data_prod
+
+networks:
+  casetally-network:
+    name: casetally-network
+    external: true

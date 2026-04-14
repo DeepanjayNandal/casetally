@@ -1,0 +1,134 @@
+services:
+
+  postgres:
+    build:
+      context: ./casetally-db/casetally-db
+    platform: linux/arm64
+    container_name: casetally-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: casetally
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: casetally_law
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - casetally-network
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U casetally -d casetally_law"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  adminer:
+    image: adminer:latest
+    platform: linux/arm64
+    container_name: casetally-adminer
+    restart: unless-stopped
+    ports:
+      - "5051:8080"
+    networks:
+      - casetally-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redis:
+    image: redis:alpine
+    platform: linux/arm64
+    container_name: casetally-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - casetally-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: casetally-redis-ui
+    restart: unless-stopped
+    environment:
+      - REDIS_HOSTS=local:casetally-redis:6379
+    ports:
+      - "5052:8081"
+    networks:
+      - casetally-network
+    depends_on:
+      - redis
+
+  backend:
+    build:
+      context: ./casetally-backend/casetally-backend
+    platform: linux/arm64
+    container_name: casetally-backend
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://casetally:${POSTGRES_PASSWORD}@casetally-postgres:5432/casetally_law
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      - EMBEDDING_DEVICE=cpu
+      - SEARCH_EMBEDDING_ENABLED=${SEARCH_EMBEDDING_ENABLED:-true}
+    ports:
+      - "3001:3001"
+    networks:
+      - casetally-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./casetally-frontend/casetally-frontend
+      args:
+        - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-http://localhost:3001}
+    platform: linux/arm64
+    container_name: casetally-frontend
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+    ports:
+      - "3000:3000"
+    networks:
+      - casetally-network
+    depends_on:
+      - backend
+
+  worker:
+    build:
+      context: ./casetally-workers/casetally-workers
+    platform: linux/arm64
+    container_name: casetally-worker
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://casetally:${POSTGRES_PASSWORD}@casetally-postgres:5432/casetally_law
+      - REDIS_HOST=casetally-redis
+      - REDIS_PORT=6379
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      - EMBEDDING_DEVICE=cpu
+      - BATCH_SIZE=${WORKER_BATCH_SIZE:-100}
+      - POLL_INTERVAL=${WORKER_POLL_INTERVAL:-5}
+    networks:
+      - casetally-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+    name: casetally_postgres_data_local
+  redis_data:
+    name: casetally_redis_data_local
+
+networks:
+  casetally-network:
+    name: casetally-network
+    driver: bridge

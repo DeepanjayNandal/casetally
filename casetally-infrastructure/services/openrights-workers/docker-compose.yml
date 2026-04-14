@@ -1,0 +1,56 @@
+services:
+  redis:
+    image: redis:alpine
+    container_name: casetally-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    networks:
+      - casetally-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: casetally-redis-ui
+    restart: unless-stopped
+    environment:
+      - REDIS_HOSTS=local:casetally-redis:6379:0:${REDIS_PASSWORD}
+    networks:
+      - casetally-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.redis-ui.rule=Host(`redis.casetally.io`)"
+      - "traefik.http.routers.redis-ui.entrypoints=web"
+      - "traefik.http.routers.redis-ui.middlewares=redis-ui-auth"
+      - "traefik.http.services.redis-ui.loadbalancer.server.port=8081"
+      - "traefik.http.middlewares.redis-ui-auth.basicauth.users=casetallyadmin:$$2y$$05$$9Bsa3Adz38SFEkIGcGylK.oGWrmm5VnINxyFquH7onnMwl2tt4EFK"
+
+  casetallyworker:
+    image: localhost:5000/casetallyworker:latest
+    container_name: casetally-worker
+    restart: unless-stopped
+    depends_on:
+      - redis
+    environment:
+      - DATABASE_URL=postgresql://casetally:${POSTGRES_PASSWORD}@casetally-postgres:5432/casetally_law
+      - REDIS_HOST=casetally-redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+      - EMBEDDING_DEVICE=cpu
+    networks:
+      - casetally-network
+
+volumes:
+  redis_data:
+    name: casetally_redis_data
+
+networks:
+  casetally-network:
+    external: true
+    name: casetally-network

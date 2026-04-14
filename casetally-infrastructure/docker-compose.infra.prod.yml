@@ -1,0 +1,126 @@
+services:
+  # =============================================================================
+  # TRAEFIK - Load Balancer and Reverse Proxy
+  # =============================================================================
+  traefik:
+    image: traefik:v2.10
+    container_name: casetally-traefik
+    restart: unless-stopped
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=casetally-network"
+      
+      # HTTP entrypoint (port 80)
+      - "--entrypoints.web.address=:80"
+      # HTTPS entrypoint (port 443)
+      - "--entrypoints.websecure.address=:443"
+      
+      # HTTP to HTTPS redirect
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+
+      # Let's Encrypt configuration
+      - "--certificatesresolvers.letsencrypt.acme.email=casetallybusiness@gmail.com"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+      
+      # Logging
+      - "--log.level=INFO"
+      - "--accesslog=true"
+      
+    ports:
+      - "80:80"       # HTTP
+      - "443:443"     # HTTPS
+    
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./volumes/traefik/letsencrypt:/letsencrypt
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+    
+    networks:
+      - casetally-network
+    
+    labels:
+      - "traefik.enable=true"
+      
+      # Dashboard (HTTPS)
+      - "traefik.http.routers.traefik.rule=Host(`traefik.casetally.io`)"
+      - "traefik.http.routers.traefik.service=api@internal"
+      - "traefik.http.routers.traefik.entrypoints=websecure"
+      - "traefik.http.routers.traefik.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.traefik-dashboard.middlewares=traefik-auth"
+      
+      # HTTP to HTTPS redirect (global)
+      - "traefik.http.middlewares.traefik-auth.basicauth.users=casetallyadmin:$$apr1$$y2mwI7hn$$KTID3SujSU3xfJD/tBlOM/"
+
+  registry:
+    image: registry:2
+    container_name: casetally-registry
+    restart: unless-stopped
+    environment:
+      - REGISTRY_STORAGE_DELETE_ENABLED=true
+      - REGISTRY_HTTP_HEADERS_Access-Control-Allow-Origin=["https://registry-ui.casetally.io"]
+      - REGISTRY_HTTP_HEADERS_Access-Control-Allow-Methods=["HEAD","GET","OPTIONS","DELETE"]
+      - REGISTRY_HTTP_HEADERS_Access-Control-Allow-Headers=["Authorization","Accept","Cache-Control"]
+      - REGISTRY_HTTP_HEADERS_Access-Control-Max-Age=[1728000]
+      - REGISTRY_HTTP_HEADERS_Access-Control-Allow-Credentials=[true]
+      - REGISTRY_HTTP_HEADERS_Access-Control-Expose-Headers=["Docker-Content-Digest"]
+    volumes:
+      - casetally_registry_data:/var/lib/registry
+    networks:
+      - casetally-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.registry.rule=Host(`registry.casetally.io`)"
+      - "traefik.http.routers.registry.entrypoints=websecure"
+      - "traefik.http.routers.registry.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.registry.middlewares=registry-cors,registry-auth"
+      - "traefik.http.services.registry.loadbalancer.server.port=5000"
+      - "traefik.http.middlewares.registry-auth.basicauth.users=casetallyadmin:$$apr1$$y2mwI7hn$$KTID3SujSU3xfJD/tBlOM/"
+      - "traefik.http.middlewares.registry-cors.headers.accesscontrolallowmethods=HEAD,GET,OPTIONS,DELETE,PUT"
+      - "traefik.http.middlewares.registry-cors.headers.accesscontrolalloworiginlist=https://registry-ui.casetally.io"
+      - "traefik.http.middlewares.registry-cors.headers.accesscontrolallowcredentials=true"
+      - "traefik.http.middlewares.registry-cors.headers.accesscontrolallowheaders=Authorization,Accept,Cache-Control,Content-Type"
+      - "traefik.http.middlewares.registry-cors.headers.accesscontrolexposeheaders=Docker-Content-Digest"
+      - "traefik.http.middlewares.registry-cors.headers.accesscontrolmaxage=1728000"
+
+
+  registry-ui:
+    image: joxit/docker-registry-ui:latest
+    container_name: casetally-registry-ui
+    restart: unless-stopped
+    depends_on:
+      - registry
+    environment:
+      - SINGLE_REGISTRY=true
+      - REGISTRY_TITLE=CaseTally Registry
+      - DELETE_IMAGES=true
+      - SHOW_CONTENT_DIGEST=true
+      - NGINX_PROXY_PASS_URL=https://registry.casetally.io
+      - NGINX_PROXY_HEADER_Authorization=Basic b3BlbnJpZ2h0c2FkbWluOm9wZW5yaWdodHNAMTIz
+      - REGISTRY_URL=https://registry.casetally.io
+      - PULL_URL=registry.casetally.io
+    networks:
+      - casetally-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.registry-ui.rule=Host(`registry-ui.casetally.io`)"
+      - "traefik.http.routers.registry-ui.entrypoints=websecure"
+      - "traefik.http.routers.registry-ui.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.registry-ui.middlewares=registry-ui-auth"
+      - "traefik.http.services.registry-ui.loadbalancer.server.port=80"
+      
+      # Auth middleware - same credentials
+      - "traefik.http.middlewares.registry-ui-auth.basicauth.users=casetallyadmin:$$apr1$$y2mwI7hn$$KTID3SujSU3xfJD/tBlOM/"
+
+
+volumes:
+  casetally_registry_data:
+    name: casetally_registry_data
+
+networks:
+  casetally-network:
+    name: casetally-network
+    driver: bridge

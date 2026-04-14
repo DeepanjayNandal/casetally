@@ -1,0 +1,101 @@
+services:
+  # =============================================================================
+  # TRAEFIK - Load Balancer and Reverse Proxy
+  # =============================================================================
+  traefik:
+    image: traefik:v2.10
+    container_name: casetally-traefik
+    restart: unless-stopped
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=casetally-network"
+      
+      # HTTP entrypoint (port 80)
+      - "--entrypoints.web.address=:80"
+      
+      # Logging
+      - "--log.level=INFO"
+      - "--accesslog=true"
+      
+    ports:
+      - "80:80"       # HTTP
+    
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+    
+    networks:
+      - casetally-network
+    
+    labels:
+      - "traefik.enable=true"
+      # Dashboard (HTTP)
+      - "traefik.http.routers.traefik.rule=Host(`traefik.casetally.io`)"
+      - "traefik.http.routers.traefik.service=api@internal"
+      - "traefik.http.routers.traefik.entrypoints=web"
+      - "traefik.http.routers.traefik-dashboard.middlewares=traefik-auth"
+      - "traefik.http.middlewares.traefik-auth.basicauth.users=casetallyadmin:$2y$05$9Bsa3Adz38SFEkIGcGylK.oGWrmm5VnINxyFquH7onnMwl2tt4EFK"
+
+  registry:
+    ports:
+      - "5000:5000"
+    image: registry:2
+    container_name: casetally-registry
+    restart: unless-stopped
+    volumes:
+      - casetally_registry_data:/var/lib/registry
+      - ./registry-config.yml:/etc/docker/registry/config.yml:ro
+    networks:
+      - casetally-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.registry.rule=Host(`registry.casetally.io`)"
+      - "traefik.http.routers.registry.entrypoints=web"
+      - "traefik.http.routers.registry.middlewares=registry-cors,registry-auth"
+      - "traefik.http.services.registry.loadbalancer.server.port=5000"
+      - "traefik.http.middlewares.registry-auth.basicauth.users=casetallyadmin:$2y$05$9Bsa3Adz38SFEkIGcGylK.oGWrmm5VnINxyFquH7onnMwl2tt4EFK"
+      - "traefik.http.middlewares.registry-cors.headers.accesscontrolallowmethods=HEAD,GET,OPTIONS,DELETE,PUT"
+      - "traefik.http.middlewares.registry-cors.headers.accesscontrolalloworiginlist=http://registry-ui.casetally.io"
+      - "traefik.http.middlewares.registry-cors.headers.accesscontrolallowcredentials=true"
+      - "traefik.http.middlewares.registry-cors.headers.accesscontrolallowheaders=Authorization,Accept,Cache-Control,Content-Type"
+      - "traefik.http.middlewares.registry-cors.headers.accesscontrolexposeheaders=Docker-Content-Digest"
+      - "traefik.http.middlewares.registry-cors.headers.accesscontrolmaxage=1728000"
+
+  registry-ui:
+    image: joxit/docker-registry-ui:latest
+    container_name: casetally-registry-ui
+    restart: unless-stopped
+    depends_on:
+      - registry
+    environment:
+      - SINGLE_REGISTRY=true
+      - REGISTRY_TITLE=CaseTally Registry
+      - DELETE_IMAGES=true
+      - SHOW_CONTENT_DIGEST=true
+      - NGINX_PROXY_PASS_URL=http://registry.casetally.io
+      - REGISTRY_URL=http://registry.casetally.io
+      - NGINX_PROXY_HEADER_Authorization=Basic b3BlbnJpZ2h0c2FkbWluOm9wZW5yaWdodHNAMTIz
+      - PULL_URL=registry.casetally.io
+    networks:
+      - casetally-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.registry-ui.rule=Host(`registry-ui.casetally.io`)"
+      - "traefik.http.routers.registry-ui.entrypoints=web"
+      - "traefik.http.routers.registry-ui.middlewares=registry-ui-auth"
+      - "traefik.http.services.registry-ui.loadbalancer.server.port=80"
+      # Auth middleware - same credentials
+      - "traefik.http.middlewares.registry-ui-auth.basicauth.users=casetallyadmin:$2y$05$9Bsa3Adz38SFEkIGcGylK.oGWrmm5VnINxyFquH7onnMwl2tt4EFK"
+      # - "traefik.http.middlewares.registry-ui-auth.basicauth.users=casetallyadmin:$2y$05$9Bsa3Adz38SFEkIGcGylK.oGWrmm5VnINxyFquH7onnMwl2tt4EFK"
+
+
+volumes:
+  casetally_registry_data:
+    name: casetally_registry_data
+
+networks:
+  casetally-network:
+    name: casetally-network
+    driver: bridge

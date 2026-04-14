@@ -1,0 +1,19 @@
+# Environment and secrets
+.env.prod
+.env
+*.pem
+*.key
+*.crt
+secrets/
+
+# Keep template files
+!.env.prod.example
+
+# Traefik cert material
+volumes/traefik/letsencrypt/acme.json
+
+# OS/IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

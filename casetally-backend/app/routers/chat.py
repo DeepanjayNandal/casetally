@@ -18,7 +18,7 @@ from app.services.search import HybridSearchService
 
 router = APIRouter(prefix="/v1", tags=["chat"])
 search_service = HybridSearchService()
-ollama_service = GroqService()
+groq_service = GroqService()
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +60,9 @@ def _stream(query: str, history: List[Dict[str, Any]]):
         )
         chunks = results["results"]
 
-        if ollama_service.is_available() and chunks:
+        if groq_service.is_available() and chunks:
             try:
-                for token in ollama_service.stream_answer(query, chunks, history):
+                for token in groq_service.stream_answer(query, chunks, history):
                     yield _event(json.dumps({"type": "text", "chunk": token}))
             except Exception as exc:
                 logger.warning("Groq stream failed: %s", exc)

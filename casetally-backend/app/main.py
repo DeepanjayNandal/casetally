@@ -1,9 +1,11 @@
 ﻿import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.api.search import router as search_router
+from app.db import SessionLocal
 from app.routers.chat import router as chat_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -26,6 +28,12 @@ def health_live():
 
 @app.get("/health/ready")
 def health_ready():
+    try:
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        db.close()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}")
     return {"status": "ok"}
 
 

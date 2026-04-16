@@ -38,7 +38,7 @@ def _build_context(results: List[Dict[str, Any]]) -> str:
 
 class GroqService:
     def __init__(self):
-        self.model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        self.model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
         self.client = OpenAI(
             api_key=os.getenv("GROQ_API_KEY"),
             base_url="https://api.groq.com/openai/v1",

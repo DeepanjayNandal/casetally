@@ -137,8 +137,9 @@ CREATE TABLE IF NOT EXISTS ingestion_runs (
 -- legal_chunks indexes
 CREATE INDEX IF NOT EXISTS idx_chunks_citation ON legal_chunks(citation);
 CREATE INDEX IF NOT EXISTS idx_chunks_clause_id ON legal_chunks(clause_id);
-CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON legal_chunks 
-    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON legal_chunks
+    USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
 CREATE INDEX IF NOT EXISTS idx_chunks_search_vector ON legal_chunks 
     USING gin(search_vector);
 CREATE INDEX IF NOT EXISTS idx_chunks_tags ON legal_chunks 

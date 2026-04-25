@@ -12,12 +12,12 @@ A legal research platform that lets you search and chat with US federal law usin
 
 | Layer | Technology |
 |---|---|
-| Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS |
+| Frontend | Next.js 16, React 19, TypeScript |
 | Backend | Python 3.11, FastAPI, SQLAlchemy 2.0 |
 | Database | PostgreSQL 16 with pgvector extension |
-| Search | Hybrid BM25 + vector similarity (pgvector) |
+| Search | Hybrid BM25 + vector similarity with HNSW indexing |
 | Embeddings | sentence-transformers (all-MiniLM-L6-v2) |
-| LLM | Groq API (Llama 3) |
+| LLM | Groq API (llama-3.1-8b-instant) |
 | Cache | Redis |
 
 ## Services

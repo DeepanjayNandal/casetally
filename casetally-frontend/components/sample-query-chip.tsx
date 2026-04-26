@@ -22,7 +22,7 @@ export function SampleQueryChip({ query, onClick }: SampleQueryChipProps) {
         borderRadius: "999px",
         background: hovered ? "hsl(var(--bg-surface))" : "transparent",
         color: "hsl(var(--text-secondary))",
-        fontSize: "12px",
+        fontSize: "13px",
         fontWeight: 500,
         fontFamily: "var(--font-inter), system-ui, sans-serif",
         cursor: "pointer",

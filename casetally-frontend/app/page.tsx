@@ -13,7 +13,7 @@ import { StatsBar } from "@/components/stats-bar"
 const SAMPLE_QUERIES = [
   "Patent eligibility requirements",
   "First Amendment protections",
-  "Federal tax brackets",
+  "Business compliance rules",
 ]
 
 export default function HomePage() {
@@ -76,7 +76,7 @@ export default function HomePage() {
             marginBottom: "16px",
           }}
         >
-          Research U.S. Federal Law with{" "}
+          Search U.S. law. Get{" "}
           <span
             style={{
               background: `linear-gradient(135deg, hsl(var(--accent)), hsl(var(--accent-glow)))`,
@@ -85,7 +85,7 @@ export default function HomePage() {
               backgroundClip: "text",
             }}
           >
-            AI
+            cited answers.
           </span>
         </h1>
 
@@ -104,8 +104,8 @@ export default function HomePage() {
             lineHeight: 1.6,
           }}
         >
-          Search the entire U.S. Code using natural language. Get answers with
-          exact citations.
+          Ask any legal question across statutes, codes, and regulations. Get
+          clear answers grounded in real citations.
         </p>
 
         {/* Search bar + hint */}

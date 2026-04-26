@@ -1,7 +1,7 @@
 const STATS = [
   { label: "Titles", value: "54" },
   { label: "Sections", value: "~63,000" },
-  { label: "Search method", value: "Hybrid BM25 + Vector" },
+  { label: "Search", value: "Hybrid BM25 + Vector" },
   { label: "Response time", value: "Sub-second" },
 ]
 

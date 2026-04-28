@@ -49,9 +49,21 @@ def _event(data: str) -> str:
 def _stream(query: str, history: List[Dict[str, Any]]):
     db = SessionLocal()
     try:
+        # Rewrite query into legal terminology before retrieval.
+        # Falls back to original if rewriting fails — never breaks the main flow.
+        search_query = query
+        if groq_service.is_available():
+            try:
+                rewritten = groq_service.rewrite_query(query)
+                if rewritten and rewritten != query:
+                    logger.info("query rewritten: %r -> %r", query, rewritten)
+                    search_query = rewritten
+            except Exception as exc:
+                logger.warning("query rewriting failed, using original: %s", exc)
+
         results = search_service.search(
             db=db,
-            query=query,
+            query=search_query,
             top_k=3,
             bm25_k=30,
             vector_k=30,

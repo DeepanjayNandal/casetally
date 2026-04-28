@@ -80,5 +80,30 @@ class GroqService:
             if token:
                 yield token
 
+    def rewrite_query(self, query: str) -> str:
+        """
+        Rewrites a conversational question into precise legal search terms.
+        Returns the rewritten string, or the original query if rewriting fails.
+        """
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Convert the user's question into 3-6 precise legal search terms "
+                        "suitable for searching U.S. statutes. Output only the search terms, "
+                        "no punctuation, no explanation."
+                    ),
+                },
+                {"role": "user", "content": query},
+            ],
+            stream=False,
+            temperature=0.0,
+            max_tokens=32,
+        )
+        rewritten = response.choices[0].message.content or ""
+        return rewritten.strip() or query
+
     def is_available(self) -> bool:
         return bool(os.getenv("GROQ_API_KEY"))

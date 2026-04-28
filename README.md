@@ -1,12 +1,12 @@
 # CaseTally
 
-A legal research platform that lets you search and chat with US federal law using hybrid search and LLM-powered answers.
+A legal research platform for searching U.S. statutes, codes, and regulations using hybrid search and LLM-powered answers.
 
 ## What it does
 
-- Search across the entire US Code using a combination of keyword (BM25) and semantic (vector) search
-- Ask plain-English questions and get answers grounded in real legal citations
-- Responses are streamed in real time via Server-Sent Events
+- Ask any legal question in plain English — query rewriting normalizes it into statutory terminology before search
+- Hybrid BM25 + vector search with HNSW indexing across 33,969 U.S. Code chunks
+- Answers streamed in real time via SSE, grounded in exact statute citations
 
 ## Stack
 

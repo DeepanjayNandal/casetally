@@ -2,8 +2,6 @@
 
 A legal research platform for searching U.S. statutes, codes, and regulations using hybrid search and LLM-powered answers.
 
-**Live demo:** _coming soon_
-
 ---
 
 ## What It Does

@@ -76,7 +76,7 @@ Browser
 
 ### `casetally-backend` — FastAPI (port 3001)
 - `POST /v1/chat/stream` — query rewrite → hybrid search → SSE-streamed LLM answer
-- `POST /v1/search` — hybrid search only, returns ranked chunks with scores
+- `POST /v1/search` — hybrid search only, sub-100ms retrieval across 33k+ chunks
 - `GET /health/ready` — liveness + real DB ping
 - Query rewriting via `GroqService.rewrite_query()` before every retrieval
 
@@ -134,6 +134,22 @@ Token streaming is one-directional (server → client). SSE is HTTP-native, auto
 
 **Why PostgreSQL for vectors instead of a dedicated vector DB?**
 Single database keeps BM25 and vector search in one query with no cross-service joins. pgvector on PostgreSQL covers both at zero extra cost or infrastructure complexity.
+
+---
+
+## Evaluation
+
+A retrieval evaluation harness lives in `scripts/eval_retrieval.py`. It runs 15 benchmark legal queries against the live search endpoint and measures:
+
+- **Precision@3** — fraction of top-3 results from the correct U.S. Code title
+- **Recall@5** — fraction of expected titles found in top-5 results
+- **MRR** — mean reciprocal rank of the first relevant result
+- **p95 latency** — 95th percentile retrieval time across all benchmark queries
+
+```bash
+python scripts/eval_retrieval.py
+python scripts/eval_retrieval.py --backend http://localhost:3001 --top-k 5
+```
 
 ---
 

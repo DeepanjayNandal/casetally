@@ -1,9 +1,8 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { ChevronRight, BookOpen, FileX } from "lucide-react"
 import { Nav } from "@/components/nav"
-import { Footer } from "@/components/footer"
 import { LegalTextRenderer } from "@/components/legal-text-renderer"
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001"

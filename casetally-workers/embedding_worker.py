@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker, Session
 
 from embedding_service import EmbeddingService
 from state_manager import StateManager, WorkerState
-from shared.models_chunk import LegalChunk, EMBEDDING_DIMENSION
+from shared.models_chunk import LegalChunk
 
 logging.basicConfig(
     level=logging.INFO,
@@ -106,7 +106,7 @@ class EmbeddingWorker:
         """Fetch chunks that need embeddings using ORM"""
         chunks = session.query(LegalChunk.id, LegalChunk.text_content).filter(
             LegalChunk.embedding.is_(None),
-            LegalChunk.is_current == True
+            LegalChunk.is_current.is_(True)
         ).order_by(LegalChunk.id).limit(limit).all()
         return [(chunk.id, chunk.text_content) for chunk in chunks]
     

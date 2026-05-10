@@ -1,10 +1,9 @@
 # ingestion/plugins/state_codes_scraper.py
 import logging
-from typing import Dict, List
-from pathlib import Path
+from typing import Dict
 
 from core.base_ingestor import BaseIngestor
-from scrapers.base_scraper import BaseScraper, BaseScraperConfig
+from scrapers.base_scraper import BaseScraper
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +70,11 @@ class CaliforniaCodesIngestor(StateCodesIngestor):
         super().__init__(*args, **kwargs)
     
     def _create_scraper(self):
-        config = BaseScraperConfig(
-            base_url="https://leginfo.legislature.ca.gov",
-            rate_limit=1.0,  # 1 request per second
-            user_agent="CaseTally California Codes Bot/1.0"
-        )
-        
         # TODO: Create California-specific scraper
+        # config = BaseScraperConfig(
+        #     base_url="https://leginfo.legislature.ca.gov",
+        #     rate_limit=1.0,
+        #     user_agent="CaseTally California Codes Bot/1.0"
+        # )
         # return CaliforniaScraper(config)
         raise NotImplementedError("California scraper not implemented")

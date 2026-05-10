@@ -3,7 +3,6 @@
 import * as React from "react"
 import Link from "next/link"
 import { useTheme } from "next-themes"
-import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -22,7 +21,7 @@ const navItems = [
 ]
 
 export function TopNavBar() {
-  const { setTheme, theme } = useTheme()
+  const { setTheme } = useTheme()
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false)
 
   return (

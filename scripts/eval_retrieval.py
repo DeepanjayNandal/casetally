@@ -158,7 +158,7 @@ def reciprocal_rank(results: List[Dict], expected_titles: List[int]) -> float:
 
 
 def run_eval(backend: str, top_k: int) -> None:
-    print(f"\nCaseTally Retrieval Evaluation")
+    print("\nCaseTally Retrieval Evaluation")
     print(f"Backend : {backend}")
     print(f"top_k   : {top_k}")
     print("=" * 88)

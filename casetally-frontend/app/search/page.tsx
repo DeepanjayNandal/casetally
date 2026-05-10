@@ -39,7 +39,6 @@ function SearchResults() {
   const initialQuery = searchParams.get("q") || ""
 
   const [turns, setTurns] = useState<Turn[]>([])
-  const [topInput, setTopInput] = useState(initialQuery)
   const [followUp, setFollowUp] = useState("")
   const [highlightedRef, setHighlightedRef] = useState<string | null>(null)
 
@@ -183,6 +182,7 @@ function SearchResults() {
         error: (err as Error).message || "Something went wrong. Please try again.",
       })
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Run search when initialQuery changes.
@@ -207,18 +207,10 @@ function SearchResults() {
     return () => window.removeEventListener("cite-click", handler)
   }, [])
 
-  // Top search bar — fresh search, navigate to new URL
-  const handleTopSearch = (q: string) => {
-    const trimmed = q.trim()
-    if (!trimmed) return
-    router.push(`/search?q=${encodeURIComponent(trimmed)}`)
-  }
-
   // Follow-up — append to conversation, update URL without navigation
   const handleFollowUp = (q: string) => {
     const trimmed = q.trim()
     if (!trimmed) return
-    setTopInput(trimmed)
     // Mark as already searched so the useEffect doesn't fire a duplicate
     lastSearchedRef.current = trimmed
     router.replace(`/search?q=${encodeURIComponent(trimmed)}`)

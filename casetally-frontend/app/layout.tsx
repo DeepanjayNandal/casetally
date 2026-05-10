@@ -1,6 +1,6 @@
 import type { Metadata } from 'next'
+import type { ReactNode } from 'react'
 import { Newsreader, Inter } from 'next/font/google'
-import './globals.css'
 import { KeyboardShortcuts } from '@/components/keyboard-shortcuts'
 
 const newsreader = Newsreader({
@@ -30,7 +30,7 @@ export const metadata: Metadata = {
 export default function RootLayout({
   children,
 }: {
-  children: React.ReactNode
+  children: ReactNode
 }) {
   return (
     <html lang="en" suppressHydrationWarning>

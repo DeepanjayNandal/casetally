@@ -76,7 +76,7 @@ If section parsing fails for a file, plugin falls back to a single document cita
 
 US Code files are resolved in this order:
 
-1. `USCODE_DATA_DIR` or `OPENRIGHTS_USCODE_DIR`
+1. `USCODE_DATA_DIR` or `CASETALLY_USCODE_DIR`
 2. `--data-dir/uscode`
 3. `--data-dir`
 4. workspace sibling `casetally-data-archive/uscode`
@@ -102,16 +102,16 @@ Flags:
 | Variable | Default | Description |
 |---|---|---|
 | `DATABASE_URL` | `postgresql://casetally:casetally@localhost:5432/casetally_law` | DB connection |
-| `OPENRIGHTS_DATA_DIR` | `/data` | Default source root |
+| `CASETALLY_DATA_DIR` | `/data` | Default source root |
 | `USCODE_DATA_DIR` | unset | Explicit US code directory |
-| `OPENRIGHTS_USCODE_DIR` | unset | Alias for US code directory |
+| `CASETALLY_USCODE_DIR` | unset | Alias for US code directory |
 | `INGESTION_LOG_PATH` | `/app/logs/ingestion.log` | File log path |
 
 Recommended local override:
 
 ```powershell
 $env:DATABASE_URL = "postgresql://casetally:strongpassword@localhost:5432/casetally_law"
-$env:OPENRIGHTS_DATA_DIR = "..\casetally-data-archive"
+$env:CASETALLY_DATA_DIR = "..\casetally-data-archive"
 $env:USCODE_DATA_DIR = "..\casetally-data-archive\uscode"
 $env:INGESTION_LOG_PATH = ".\logs\ingestion.log"
 ```

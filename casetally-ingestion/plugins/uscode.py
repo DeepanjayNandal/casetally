@@ -31,14 +31,14 @@ class USCodeIngestor(BaseIngestor):
         Resolve US Code directory from known locations.
 
         Priority:
-        1. USCODE_DATA_DIR / OPENRIGHTS_USCODE_DIR env vars
+        1. USCODE_DATA_DIR / CASETALLY_USCODE_DIR env vars
         2. --data-dir/uscode
         3. --data-dir (if it already contains html files)
         4. workspace sibling: casetally-data-archive/uscode
         """
         candidates: List[Path] = []
 
-        for env_var in ("USCODE_DATA_DIR", "OPENRIGHTS_USCODE_DIR"):
+        for env_var in ("USCODE_DATA_DIR", "CASETALLY_USCODE_DIR"):
             env_path = os.getenv(env_var)
             if env_path:
                 candidates.append(Path(env_path))

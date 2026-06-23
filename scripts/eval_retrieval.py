@@ -107,13 +107,30 @@ def extract_title(citation: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
+def rewrite_query(backend: str, query: str) -> str:
+    """POST /v1/rewrite and return the rewritten query string."""
+    payload = json.dumps({"query": query}).encode()
+    req = urllib.request.Request(
+        f"{backend}/v1/rewrite",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+        return data.get("rewritten", query)
+    except Exception:
+        return query
+
+
 def search(backend: str, query: str, top_k: int) -> Tuple[List[Dict], int]:
     """POST /v1/search and return (results, took_ms)."""
     payload = json.dumps({
         "query": query,
         "top_k": top_k,
-        "bm25_k": 30,
-        "vector_k": 30,
+        "bm25_k": 50,
+        "vector_k": 50,
         "weight_bm25": 0.5,
         "weight_vector": 0.5,
     }).encode()
@@ -157,10 +174,11 @@ def reciprocal_rank(results: List[Dict], expected_titles: List[int]) -> float:
     return 0.0
 
 
-def run_eval(backend: str, top_k: int) -> None:
+def run_eval(backend: str, top_k: int, use_rewrite: bool = False) -> None:
     print("\nCaseTally Retrieval Evaluation")
     print(f"Backend : {backend}")
     print(f"top_k   : {top_k}")
+    print(f"rewrite : {'on' if use_rewrite else 'off'}")
     print("=" * 88)
     print(f"  {'Query label':<42} {'P@3':>5} {'R@5':>5} {'MRR':>5} {'ms':>6}")
     print("-" * 88)
@@ -169,7 +187,10 @@ def run_eval(backend: str, top_k: int) -> None:
 
     for item in BENCHMARK:
         try:
-            results, took_ms = search(backend, item["query"], top_k)
+            query = item["query"]
+            if use_rewrite:
+                query = rewrite_query(backend, query)
+            results, took_ms = search(backend, query, top_k)
         except Exception as exc:
             print(f"  ERROR — {item['label']}: {exc}")
             continue
@@ -210,5 +231,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CaseTally retrieval evaluation harness")
     parser.add_argument("--backend", default="http://localhost:3001")
     parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument("--rewrite", action="store_true", help="Rewrite queries via LLM before retrieval")
     args = parser.parse_args()
-    run_eval(args.backend, args.top_k)
+    run_eval(args.backend, args.top_k, use_rewrite=args.rewrite)

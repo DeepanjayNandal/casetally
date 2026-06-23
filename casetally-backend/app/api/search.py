@@ -1,12 +1,32 @@
 ﻿from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.dependencies import groq_service, search_service
 from app.schemas import SearchRequest, SearchResponse
-from app.services.search import HybridSearchService
 
 router = APIRouter(prefix="/v1", tags=["search"])
-search_service = HybridSearchService()
+
+
+class RewriteRequest(BaseModel):
+    query: str
+
+
+class RewriteResponse(BaseModel):
+    original: str
+    rewritten: str
+
+
+@router.post("/rewrite", response_model=RewriteResponse)
+def rewrite(payload: RewriteRequest):
+    if not groq_service.is_available():
+        return RewriteResponse(original=payload.query, rewritten=payload.query)
+    try:
+        rewritten = groq_service.rewrite_query(payload.query)
+    except Exception:
+        rewritten = payload.query
+    return RewriteResponse(original=payload.query, rewritten=rewritten)
 
 
 @router.post("/search", response_model=SearchResponse)

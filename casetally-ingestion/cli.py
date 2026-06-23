@@ -8,7 +8,6 @@ from pathlib import Path
 
 from core.db_utils import get_ingestion_session
 from plugins.uscode import USCodeIngestor
-from plugins.state_codes import StateCodesIngestor
 
 logger = logging.getLogger(__name__)
 

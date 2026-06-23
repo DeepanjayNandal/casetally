@@ -116,11 +116,15 @@ class EmbeddingWorker:
         chunk_ids: List[int],
         embeddings: List[List[float]]
     ):
-        """Update database with generated embeddings using ORM"""
-        for chunk_id, embedding in zip(chunk_ids, embeddings):
-            chunk = session.query(LegalChunk).filter(LegalChunk.id == chunk_id).first()
-            if chunk:
-                chunk.embedding = embedding
+        """Bulk-update embeddings with a single executemany call — no per-row SELECT."""
+        params = [
+            {"id": chunk_id, "emb": "[" + ",".join(f"{v:.8f}" for v in emb) + "]"}
+            for chunk_id, emb in zip(chunk_ids, embeddings)
+        ]
+        session.execute(
+            text("UPDATE legal_chunks SET embedding = CAST(:emb AS vector) WHERE id = :id"),
+            params,
+        )
     
     def process_batch(self) -> int:
         """Process one batch of chunks - returns number processed"""

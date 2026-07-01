@@ -7,7 +7,9 @@ import { LegalTextRenderer } from "@/components/legal-text-renderer"
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001"
 
-// 54 U.S. Code titles (static list — titles don't change)
+// U.S. Code titles 1-54 (static list — titles don't change). Title 53 is
+// reserved with no content and is filtered out of the rendered list below,
+// leaving the 53 titles that are actually ingested and browsable.
 const USC_TITLES = [
   { num: 1, name: "General Provisions" },
   { num: 2, name: "The Congress" },
@@ -162,11 +164,12 @@ export default function CodePage() {
                 fontFamily: "var(--font-inter), system-ui, sans-serif",
               }}
             >
-              54 Titles
+              53 Titles
             </span>
           </div>
 
-          {USC_TITLES.map((t) => (
+          {/* Title 53 is reserved and has no statutory content to browse. */}
+          {USC_TITLES.filter((t) => !t.name.startsWith("[Reserved]")).map((t) => (
             <button
               key={t.num}
               type="button"

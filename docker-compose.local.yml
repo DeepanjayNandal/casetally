@@ -78,7 +78,8 @@ services:
       - EMBEDDING_DEVICE=cpu
       - SEARCH_EMBEDDING_ENABLED=${SEARCH_EMBEDDING_ENABLED:-true}
       - GROQ_API_KEY=${GROQ_API_KEY}
-      - GROQ_MODEL=${GROQ_MODEL:-llama-3.1-8b-instant}
+      - GROQ_MODEL=${GROQ_MODEL:-openai/gpt-oss-20b}
+      - GROQ_REASONING_EFFORT=${GROQ_REASONING_EFFORT:-low}
     volumes:
       - ./casetally-backend/app:/app/app
     ports:

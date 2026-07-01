@@ -1,6 +1,6 @@
 const STATS = [
-  { label: "Titles", value: "54" },
-  { label: "Sections", value: "~63,000" },
+  { label: "U.S. Code titles", value: "53" },
+  { label: "Sections indexed", value: "47,207" },
   { label: "Search", value: "Hybrid BM25 + Vector" },
   { label: "Response time", value: "Sub-second" },
 ]

@@ -32,6 +32,14 @@ class BaseIngestor(ABC):
         self.batch_size = batch_size
         self.chunker = TextChunker(chunk_size=512, overlap=50)
 
+        # A citation can appear as more than one section heading in a source
+        # file. Chunk indices therefore continue from where the previous
+        # occurrence stopped, and the clause_ids seen for a citation are
+        # accumulated across the whole run so that deactivation can be applied
+        # once at the end rather than once per occurrence.
+        self._chunk_offsets: Dict[str, int] = {}
+        self._active_clause_ids: Dict[str, List[str]] = {}
+
         # Create data directory if needed
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -109,7 +117,7 @@ class BaseIngestor(ABC):
 
         existing_sql = text("""
             SELECT id, citation, text_content, jurisdiction, document_type,
-                   chunk_type, tags, version_hash, effective_date
+                   chunk_type, tags, version_hash, effective_date, is_current
             FROM legal_chunks
             WHERE clause_id = :clause_id
             LIMIT 1
@@ -143,7 +151,12 @@ class BaseIngestor(ABC):
             or existing['effective_date'] != effective_date
         )
 
-        if not text_changed and not metadata_changed:
+        # A chunk that is present in the current source must be live again even
+        # when its text and metadata are identical, otherwise a row that was
+        # deactivated by an earlier run can never be revived.
+        reactivating = not existing['is_current']
+
+        if not text_changed and not metadata_changed and not reactivating:
             return {'id': existing['id'], 'created': 0, 'updated': 0, 'unchanged': 1}
 
         update_sql = text("""
@@ -314,8 +327,13 @@ class BaseIngestor(ABC):
         version_hash = self._compute_version_hash(content)
 
         # Insert each chunk with document-level version hash so chunks/artifacts stay consistent.
+        # Indices continue past any earlier occurrence of this citation in the
+        # same run, so a repeated section heading appends chunks instead of
+        # overwriting the ones already stored.
+        base_index = self._chunk_offsets.get(citation, 0)
         active_clause_ids: List[str] = []
-        for idx, chunk in enumerate(chunks):
+        for offset, chunk in enumerate(chunks):
+            idx = base_index + offset
             chunk_result = self.insert_legal_chunk(
                 citation=citation,
                 text_content=chunk['text'],
@@ -332,7 +350,8 @@ class BaseIngestor(ABC):
             result['chunks_updated'] += chunk_result['updated']
             result['chunks_unchanged'] += chunk_result['unchanged']
 
-        result['chunks_deactivated'] = self.deactivate_stale_chunks(citation, active_clause_ids)
+        self._chunk_offsets[citation] = base_index + len(chunks)
+        self._active_clause_ids.setdefault(citation, []).extend(active_clause_ids)
 
         # Insert PDF artifact if provided
         if pdf_path:
@@ -384,6 +403,27 @@ class BaseIngestor(ABC):
             result['artifacts_unchanged']
         )
         return result
+
+    def finalize_deactivation(self) -> int:
+        """
+        Deactivate chunks that no longer appear in the source.
+
+        Runs once per citation after every document in the run has been
+        ingested, using the union of clause_ids seen for that citation. Doing
+        this per document instead would let a citation that appears as several
+        section headings deactivate the chunks written by its own earlier
+        occurrences.
+
+        Returns:
+            Number of chunks marked as not current
+        """
+        total = 0
+        for citation, clause_ids in self._active_clause_ids.items():
+            total += self.deactivate_stale_chunks(citation, sorted(set(clause_ids)))
+
+        self._chunk_offsets.clear()
+        self._active_clause_ids.clear()
+        return total
 
     def chunk_exists(self, citation: str) -> bool:
         """

@@ -142,7 +142,6 @@ class USCodeIngestor(BaseIngestor):
 
                         stats["chunks_created"] += result["chunks_created"]
                         stats["chunks_updated"] += result["chunks_updated"]
-                        stats["chunks_deactivated"] += result["chunks_deactivated"]
                         stats["artifacts_created"] += result["artifacts_created"]
 
                         if result["status"] == "inserted":
@@ -169,6 +168,11 @@ class USCodeIngestor(BaseIngestor):
                     logger.error(f"Error processing {html_file.name}: {e}", exc_info=True)
                     stats["errors"] += 1
                     continue
+
+            # Deactivation runs once for the whole corpus, after every file has
+            # been seen, so a citation appearing in more than one place cannot
+            # retire the chunks written by its own earlier occurrence.
+            stats["chunks_deactivated"] = self.finalize_deactivation()
 
             self.commit_batch()
 

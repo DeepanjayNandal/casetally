@@ -38,11 +38,19 @@ def _build_context(results: List[Dict[str, Any]]) -> str:
 
 class GroqService:
     def __init__(self):
-        self.model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+        self.model = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+        # gpt-oss and qwen models on Groq emit reasoning tokens before their
+        # answer. Without a low effort setting they exhaust short token budgets
+        # thinking and return empty content. Set to "" to omit the parameter
+        # for models that do not support it.
+        self.reasoning_effort = os.getenv("GROQ_REASONING_EFFORT", "low")
         self.client = OpenAI(
             api_key=os.getenv("GROQ_API_KEY"),
             base_url="https://api.groq.com/openai/v1",
         )
+
+    def _extra(self) -> Dict[str, Any]:
+        return {"reasoning_effort": self.reasoning_effort} if self.reasoning_effort else {}
 
     def stream_answer(
         self,
@@ -73,6 +81,7 @@ class GroqService:
             stream=True,
             temperature=0.1,
             max_tokens=1024,
+            extra_body=self._extra(),
         )
 
         for chunk in stream:
@@ -100,9 +109,14 @@ class GroqService:
             ],
             stream=False,
             temperature=0.0,
-            max_tokens=32,
+            # Budget covers reasoning tokens as well as the terms themselves;
+            # 32 was sized for a non-reasoning model and yields empty output.
+            max_tokens=250,
+            extra_body=self._extra(),
         )
         rewritten = response.choices[0].message.content or ""
+        # Models may return one term per line; collapse to a single query string.
+        rewritten = " ".join(rewritten.split())
         return rewritten.strip() or query
 
     def is_available(self) -> bool:

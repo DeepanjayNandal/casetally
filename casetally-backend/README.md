@@ -41,7 +41,7 @@ This service does not own:
 2. BM25 retrieval using `plainto_tsquery` + `ts_rank_cd`
 3. Vector retrieval using pgvector HNSW cosine distance (`embedding <=> query_vector`)
 4. Score normalization + weighted fusion into `hybrid_score`
-5. Top 3 chunks sent to Groq (`llama-3.1-8b-instant`) for answer generation
+5. Top 3 chunks sent to Groq (`openai/gpt-oss-20b`) for answer generation
 6. Tokens streamed back as SSE: `data: {"type": "text", "chunk": "..."}`
 
 ## Environment Variables
@@ -50,7 +50,8 @@ This service does not own:
 |---|---|---|
 | `DATABASE_URL` | `postgresql://casetally:...@localhost:5432/casetally_law` | DB connection string |
 | `GROQ_API_KEY` | — | Groq API key (required) |
-| `GROQ_MODEL` | `llama-3.1-8b-instant` | Groq model for rewriting + answers |
+| `GROQ_MODEL` | `openai/gpt-oss-20b` | Groq model for rewriting + answers |
+| `GROQ_REASONING_EFFORT` | `low` | Reasoning budget for reasoning-class models; set empty to omit |
 | `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Query embedding model |
 | `EMBEDDING_DEVICE` | `cpu` | Inference device |
 | `SEARCH_EMBEDDING_ENABLED` | `true` | Enable/disable vector branch |

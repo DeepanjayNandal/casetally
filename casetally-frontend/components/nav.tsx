@@ -81,7 +81,7 @@ function AboutModal({ onClose }: { onClose: () => void }) {
         </p>
         <ul style={{ paddingLeft: "0", margin: "0 0 24px", listStyle: "none" }}>
           {[
-            "Hybrid retrieval combining BM25 keyword search and vector similarity search across 54 U.S. Code titles and ~63,000 sections",
+            "Hybrid retrieval combining BM25 keyword search and vector similarity search across 53 U.S. Code titles and 47,207 sections",
             "Retrieved sections are passed as context to an LLM which generates a structured answer with exact statute citations",
             "All answers are grounded — the AI only uses retrieved legal text, never speculation",
           ].map((item, i) => (

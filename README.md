@@ -6,7 +6,7 @@ A legal research platform for searching U.S. statutes, codes, and regulations us
 
 ## What It Does
 
-Ask any legal question in plain English. CaseTally rewrites your question into legal terminology, searches 33,969 U.S. Code chunks using hybrid BM25 + vector search, and streams a cited answer back in real time.
+Ask any legal question in plain English. CaseTally rewrites your question into legal terminology, searches 83,706 U.S. Code chunks using hybrid BM25 + vector search, and streams a cited answer back in real time.
 
 > "Can my boss fire me?" → rewrites to → "wrongful termination at-will employment exceptions" → retrieves exact statutes → streams grounded answer
 
@@ -57,7 +57,7 @@ Browser
 
 4. LLM Answer (Groq, streaming)
    ├─ Top 3 chunk snippets sent as context
-   ├─ llama-3.1-8b-instant generates cited answer
+   ├─ openai/gpt-oss-20b generates cited answer
    └─ Tokens streamed via SSE → react-markdown renders live
 
 5. Sources panel: separate /v1/search call (top 10) renders
@@ -78,14 +78,14 @@ Browser
 ### `casetally-backend` — FastAPI (port 3001)
 
 - `POST /v1/chat/stream` — query rewrite → hybrid search → SSE-streamed LLM answer
-- `POST /v1/search` — hybrid search only, sub-100ms retrieval across 33k+ chunks
+- `POST /v1/search` — hybrid search only, p50 18ms retrieval across 83k+ chunks
 - `POST /v1/rewrite` — exposes query rewriting as a standalone endpoint
 - `GET /health/ready` — liveness + real DB ping
 - Query rewriting via `GroqService.rewrite_query()` before every retrieval
 
 ### `casetally-db` — PostgreSQL 16 + pgvector
 
-- `legal_chunks` table — 33,969 rows, each with `text_content`, `search_vector` (tsvector), `embedding` (vector(384))
+- `legal_chunks` table — 83,706 rows, each with `text_content`, `search_vector` (tsvector), `embedding` (vector(384))
 - HNSW index on `embedding` column for sub-linear ANN lookup
 - GIN index on `search_vector` for BM25
 - Triggers auto-update `search_vector` on insert/update
@@ -99,9 +99,10 @@ Browser
 
 ### `casetally-ingestion` — Ingestion CLI
 
-- Custom section-by-section HTML parser across govinfo.gov files for all 54 U.S. Code titles, extracting section structure and cross-referencing PDF page offsets from embedded markup comments
+- Custom section-by-section HTML parser across govinfo.gov files for all 53 existing U.S. Code titles (Title 53 is reserved and has no content), extracting section structure and cross-referencing PDF page offsets from embedded markup comments
 - Chunks text by section, writes to `legal_chunks`
 - Idempotent: SHA256 version hash per section — re-runs skip unchanged content, update changed content, and reset embeddings only when text changes
+- Stale-chunk deactivation runs once per citation at the end of a run, using the union of every `clause_id` seen, so a citation appearing as multiple section headings cannot retire the chunks written by its own earlier occurrence
 
 ### `casetally-infrastructure` — Docker Compose configs
 
@@ -119,9 +120,9 @@ Browser
 | Database | PostgreSQL 16 + pgvector |
 | Search | Hybrid BM25 + vector, HNSW indexing |
 | Embeddings | sentence-transformers (all-MiniLM-L6-v2, 384-dim) |
-| LLM | Groq API (llama-3.1-8b-instant) |
+| LLM | Groq API (openai/gpt-oss-20b) |
 | Cache | Redis (worker state) |
-| Data source | govinfo.gov HTML — 54 U.S. Code titles |
+| Data source | govinfo.gov HTML — 53 U.S. Code titles |
 
 ---
 
@@ -131,7 +132,7 @@ Browser
 Legal text has precise terminology — `§ 1983`, `habeas corpus`, `mens rea`. BM25 catches exact statute numbers that semantic search misses. Vector search catches meaning when phrasing differs. Fusion beats either alone.
 
 **Why query rewriting?**
-User language and legal language don't match. "Can my boss fire me?" contains none of the words in the statutes that answer it. Rewriting to "wrongful termination at-will employment" before retrieval improves BM25 recall — particularly for queries where the colloquial legal term (e.g. "wire fraud") doesn't appear verbatim in the statute text.
+User language and legal language don't match. "Can my boss fire me?" contains none of the words in the statutes that answer it, and rewrites to "termination rights employee termination unlawful dismissal at-will employment" before retrieval. Measured effect is a trade-off: MRR improves 10% while Precision@3 and Recall@5 drop slightly, so the right statute ranks higher but the top-5 window gets noisier.
 
 **Why HNSW over ivfflat?**
 HNSW (Hierarchical Navigable Small World) provides better recall, handles inserts without retraining, and is what production vector databases (Pinecone, Weaviate, Qdrant) use internally. Replaced ivfflat after initial ingestion.
@@ -157,73 +158,36 @@ python scripts/eval_retrieval.py
 python scripts/eval_retrieval.py --backend http://localhost:3001 --top-k 5 --rewrite
 ```
 
-### Results (local instance, warm model, 22 of 54 titles ingested)
+### Results (local instance, warm model, all 53 titles ingested)
 
 Two modes: raw hybrid search, and hybrid search with LLM query rewriting (the actual user-facing flow).
 
 | Metric | Without rewriting | With rewriting |
 | --- | --- | --- |
-| Mean Precision@3 | 0.31 | 0.36 |
-| Mean Recall@5 | 0.34 | 0.42 |
-| Mean MRR | 0.39 | 0.47 |
-| p50 latency (search only) | 6ms | 73ms (incl. Groq rewrite call) |
-| Max observed latency | 22ms | 233ms |
+| Mean Precision@3 | 0.67 | 0.62 |
+| Mean Recall@5 | 0.76 | 0.69 |
+| Mean MRR | 0.69 | 0.76 |
+| p50 latency | 18ms | 33ms (incl. rewrite call) |
+| p95 latency | 36ms | 45ms |
 
-Query rewriting improved MRR by 21% and surfaced correct statutes for queries like "wire fraud criminal penalties" (0.00 → MRR 1.00) where the colloquial legal term doesn't appear verbatim in the statute text.
+Query rewriting is a trade-off rather than a uniform gain. It improves MRR by 10% — the first
+relevant statute ranks higher — while lowering Precision@3 and Recall@5, because the expanded
+query pulls in more loosely-related neighbours across the top-5 window. For a product where the
+user reads result one, MRR is the metric that matters.
 
-**Note on aggregate scores:** 7 of the 15 benchmark queries target titles not present in this local instance (Title 26 Tax, Title 35 Patents, Title 42 Social Security, Title 15 Antitrust, Title 33 Clean Water, Title 21 Controlled Substances, Title 29 Labor). Those 7 score 0.00 by construction — the statutes don't exist in the database. On the 8 queries where the relevant title is available, mean P@3 is 0.58 and mean MRR is 0.74 (with rewriting). On the 3 fully-covered queries (Bankruptcy, Copyright, Immigration), P@3 and MRR are both 1.00.
+**Effect of corpus coverage.** An earlier run against 22 of 53 titles (32,969 chunks) scored
+P@3 0.31, R@5 0.34, MRR 0.39. Seven benchmark queries scored 0.00 purely because their titles
+were absent. Ingesting the remaining 31 titles more than doubled every metric, and latency
+*improved* despite 2.5x the data, since HNSW lookup is sub-linear in corpus size.
 
-<details>
-<summary>Full per-query breakdown — with rewriting</summary>
+**A query that still fails.** "Wire fraud criminal penalties" scores 0.00 in both modes even
+though `18 U.S.C. § 1343` is present with correct text. Three factors compound: `plainto_tsquery`
+requires every term to appear in a single chunk, 512-word chunking scatters the statute's terms
+across chunks, and "wire fraud" is a colloquial label absent from statutory text that reads
+"scheme or artifice to defraud" transmitted "by means of wire". The governing chunk contains
+neither "criminal" nor any form of "penalty", so BM25 excludes it before ranking begins.
 
-```text
-  Query label                                  P@3   R@5   MRR     ms
-----------------------------------------------------------------------------------------
-  First Amendment / civil rights              0.33  0.50  0.33   233ms
-  Patents (Title 35)                          0.00  0.00  0.00   176ms  ← title not ingested
-  Bankruptcy (Title 11)                       0.67  1.00  0.50    74ms
-  Copyrights (Title 17)                       1.00  1.00  1.00    85ms
-  Internal Revenue (Title 26)                 0.00  0.00  0.00   128ms  ← title not ingested
-  Crimes (Title 18)                           0.67  1.00  1.00    46ms
-  Immigration (Title 8)                       1.00  1.00  1.00    65ms
-  Commerce / Antitrust (Title 15)             0.00  0.00  0.00   113ms  ← title not ingested
-  Social Security (Title 42)                  0.00  0.00  0.00    49ms  ← title not ingested
-  Employment discrimination (Title 42/29/5)   0.33  0.33  1.00    74ms
-  Controlled substances (Title 21)            0.00  0.00  0.00    44ms  ← title not ingested
-  Firearms (Title 18/26)                      0.67  0.50  1.00    70ms
-  Labor / minimum wage (Title 29/5)           0.67  0.50  1.00    56ms
-  Clean Water Act (Title 33)                  0.00  0.00  0.00    58ms  ← title not ingested
-  Habeas corpus (Title 28)                    0.00  0.50  0.25    73ms
-  MEAN                                        0.36  0.42  0.47    89ms
-```
-
-</details>
-
-<details>
-<summary>Full per-query breakdown — without rewriting (raw hybrid search)</summary>
-
-```text
-  Query label                                  P@3   R@5   MRR     ms
-----------------------------------------------------------------------------------------
-  First Amendment / civil rights              0.00  0.25  0.20    22ms
-  Patents (Title 35)                          0.00  0.00  0.00    10ms  ← title not ingested
-  Bankruptcy (Title 11)                       1.00  1.00  1.00     9ms
-  Copyrights (Title 17)                       1.00  1.00  1.00     7ms
-  Internal Revenue (Title 26)                 0.00  0.00  0.00     7ms  ← title not ingested
-  Crimes (Title 18)                           0.00  0.00  0.00     6ms
-  Immigration (Title 8)                       1.00  1.00  1.00     8ms
-  Commerce / Antitrust (Title 15)             0.00  0.00  0.00    11ms  ← title not ingested
-  Social Security (Title 42)                  0.00  0.00  0.00     6ms  ← title not ingested
-  Employment discrimination (Title 42/29/5)   0.33  0.33  1.00     5ms
-  Controlled substances (Title 21)            0.00  0.00  0.00     6ms  ← title not ingested
-  Firearms (Title 18/26)                      1.00  0.50  1.00     6ms
-  Labor / minimum wage (Title 29/5)           0.33  0.50  0.50     5ms
-  Clean Water Act (Title 33)                  0.00  0.00  0.00     6ms  ← title not ingested
-  Habeas corpus (Title 28)                    0.00  0.50  0.20     6ms
-  MEAN                                        0.31  0.34  0.39     8ms
-```
-
-</details>
+Full per-query output for both modes is committed to `scripts/eval_results.txt`.
 
 ---
 

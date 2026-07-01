@@ -23,7 +23,7 @@ export function TrustBadge() {
           letterSpacing: "0.1em",
         }}
       >
-        U.S. Code · 54 Titles · govinfo.gov
+        U.S. Code · 53 Titles · govinfo.gov
       </span>
     </div>
   )

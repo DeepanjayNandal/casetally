@@ -1,0 +1,70 @@
+CaseTally — retrieval evaluation
+Recorded: 2026-08-31
+Corpus  : 83,706 chunks / 47,207 citations / 53 U.S. Code titles (Title 53 is reserved)
+Model   : openai/gpt-oss-20b (rewrite), all-MiniLM-L6-v2 384-dim (embeddings)
+Host    : local Docker (postgres 16 + pgvector), warm embedding model
+
+Prior baseline for comparison, 22 titles / 32,969 chunks:
+  P@3 0.31   R@5 0.34   MRR 0.39
+
+=================== MODE 1: hybrid search, no rewrite ===================
+
+CaseTally Retrieval Evaluation
+Backend : http://localhost:3001
+top_k   : 5
+rewrite : off
+========================================================================================
+  Query label                                  P@3   R@5   MRR     ms
+----------------------------------------------------------------------------------------
+  First Amendment / civil rights              0.33  0.25  0.33    24ms
+  Patents (Title 35)                          0.67  1.00  0.50    18ms
+  Bankruptcy (Title 11)                       1.00  1.00  1.00    33ms
+  Copyrights (Title 17)                       1.00  1.00  1.00    18ms
+  Internal Revenue (Title 26)                 1.00  1.00  1.00    30ms
+  Crimes (Title 18)                           0.00  0.00  0.00    19ms
+  Immigration (Title 8)                       1.00  1.00  1.00    22ms
+  Commerce / Antitrust (Title 15)             0.33  1.00  0.50    36ms
+  Social Security (Title 42)                  0.33  1.00  0.50    16ms
+  Employment discrimination (Title 42/29/5)   0.33  0.67  0.50    11ms
+  Controlled substances (Title 21)            1.00  1.00  1.00    13ms
+  Firearms (Title 18/26)                      0.33  0.50  0.50    10ms
+  Labor / minimum wage (Title 29/5)           1.00  0.50  1.00    10ms
+  Clean Water Act (Title 33)                  0.67  1.00  0.50    15ms
+  Habeas corpus (Title 28)                    1.00  0.50  1.00    29ms
+========================================================================================
+  MEAN                                        0.67  0.76  0.69    20ms
+
+  Latency — p50: 18ms   p95: 36ms
+  Queries run : 15 / 15
+
+
+=================== MODE 2: LLM query rewriting on ======================
+
+CaseTally Retrieval Evaluation
+Backend : http://localhost:3001
+top_k   : 5
+rewrite : on
+========================================================================================
+  Query label                                  P@3   R@5   MRR     ms
+----------------------------------------------------------------------------------------
+  First Amendment / civil rights              0.67  0.50  0.50    37ms
+  Patents (Title 35)                          0.67  1.00  1.00    24ms
+  Bankruptcy (Title 11)                       0.33  1.00  0.33    20ms
+  Copyrights (Title 17)                       0.67  1.00  1.00    43ms
+  Internal Revenue (Title 26)                 1.00  1.00  1.00    34ms
+  Crimes (Title 18)                           0.00  0.00  0.00    32ms
+  Immigration (Title 8)                       1.00  1.00  1.00    33ms
+  Commerce / Antitrust (Title 15)             0.00  0.00  0.00    27ms
+  Social Security (Title 42)                  0.67  1.00  1.00    45ms
+  Employment discrimination (Title 42/29/5)   0.33  0.33  1.00    31ms
+  Controlled substances (Title 21)            1.00  1.00  1.00    38ms
+  Firearms (Title 18/26)                      0.33  0.50  0.50    40ms
+  Labor / minimum wage (Title 29/5)           1.00  0.50  1.00    40ms
+  Clean Water Act (Title 33)                  0.67  1.00  1.00    30ms
+  Habeas corpus (Title 28)                    1.00  0.50  1.00    18ms
+========================================================================================
+  MEAN                                        0.62  0.69  0.76    32ms
+
+  Latency — p50: 33ms   p95: 45ms
+  Queries run : 15 / 15
+

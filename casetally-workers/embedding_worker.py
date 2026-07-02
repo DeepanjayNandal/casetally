@@ -31,6 +31,7 @@ class EmbeddingWorker:
         self.worker_id = os.getenv("HOSTNAME", "embedding-worker-1")
         self.batch_size = int(os.getenv("BATCH_SIZE", "100"))
         self.poll_interval = int(os.getenv("POLL_INTERVAL", "5"))
+        self.max_retries = int(os.getenv("MAX_EMBED_RETRIES", "3"))
         self.running = False
         
         # Validate environment
@@ -103,12 +104,80 @@ class EmbeddingWorker:
         )
     
     def _get_pending_chunks(self, session: Session, limit: int) -> List[Tuple[int, str]]:
-        """Fetch chunks that need embeddings using ORM"""
+        """
+        Fetch chunks that need embeddings using ORM.
+
+        Rows are claimed with FOR UPDATE SKIP LOCKED so that concurrent workers
+        take disjoint batches. Without it every worker orders by the same id and
+        selects the same rows, duplicating encode work instead of sharing it.
+        The locks are held until the batch commits, which is also what makes a
+        crashed worker's rows immediately available to another one.
+        """
         chunks = session.query(LegalChunk.id, LegalChunk.text_content).filter(
             LegalChunk.embedding.is_(None),
-            LegalChunk.is_current.is_(True)
-        ).order_by(LegalChunk.id).limit(limit).all()
+            LegalChunk.is_current.is_(True),
+            LegalChunk.retry_count < self.max_retries
+        ).order_by(LegalChunk.id).limit(limit).with_for_update(skip_locked=True).all()
         return [(chunk.id, chunk.text_content) for chunk in chunks]
+
+    def _record_failures(self, chunk_ids: List[int]) -> None:
+        """
+        Increment retry_count for chunks that failed to encode.
+
+        Uses its own session because the caller's transaction has already been
+        rolled back; writing the counter on the dead transaction would silently
+        discard it and the chunk would be retried forever.
+        """
+        if not chunk_ids:
+            return
+
+        session = self.SessionLocal()
+        try:
+            session.execute(
+                text("UPDATE legal_chunks SET retry_count = retry_count + 1 WHERE id = ANY(:ids)"),
+                {"ids": chunk_ids},
+            )
+            session.commit()
+            logger.warning(f"Incremented retry_count for {len(chunk_ids)} chunk(s): {chunk_ids[:5]}")
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Could not record embedding failures: {e}")
+        finally:
+            session.close()
+
+    def _process_individually(self, chunk_ids: List[int], texts: List[str]) -> int:
+        """
+        Re-run a failed batch one chunk at a time.
+
+        A batch fails as a unit, so without this a single un-encodable chunk
+        would take its whole batch down repeatedly and every other chunk in it
+        would be counted as failing too. Encoding row by row isolates the bad
+        chunk, lets the rest of the batch through, and charges retry_count only
+        to the chunk that actually raised.
+
+        Returns:
+            Number of chunks successfully embedded
+        """
+        succeeded = 0
+        failed: List[int] = []
+
+        for chunk_id, chunk_text in zip(chunk_ids, texts):
+            session = self.SessionLocal()
+            try:
+                embeddings = self.embedding_service.generate_batch([chunk_text])
+                self._update_embeddings(session, [chunk_id], embeddings)
+                session.commit()
+                succeeded += 1
+            except Exception as e:
+                session.rollback()
+                failed.append(chunk_id)
+                logger.error(f"Chunk {chunk_id} failed to embed: {e}")
+            finally:
+                session.close()
+
+        self._record_failures(failed)
+        logger.info(f"Per-chunk retry: {succeeded} succeeded, {len(failed)} failed")
+        return succeeded
     
     def _update_embeddings(
         self,
@@ -129,7 +198,12 @@ class EmbeddingWorker:
     def process_batch(self) -> int:
         """Process one batch of chunks - returns number processed"""
         session = self.SessionLocal()
-        
+
+        # Bound before the try so the failure path can reference them even when
+        # the fetch itself is what raised.
+        chunk_ids: List[int] = []
+        texts: List[str] = []
+
         try:
             # Transition to processing state
             self.state_manager.transition_to(WorkerState.PROCESSING)
@@ -162,16 +236,23 @@ class EmbeddingWorker:
         except Exception as e:
             logger.error(f"Error processing batch: {e}", exc_info=True)
             session.rollback()
-            
+
             # Record error
             self.state_manager.transition_to(
                 WorkerState.ERROR,
                 {"error": str(e)}
             )
             self.state_manager.record_error(str(e))
-            
-            return 0
-            
+
+            # Retry the batch one chunk at a time so a single bad chunk cannot
+            # block the rest of it. Chunks that still fail get their
+            # retry_count incremented and drop out of the queue at the cap.
+            try:
+                return self._process_individually(chunk_ids, texts)
+            except Exception as inner:
+                logger.error(f"Per-chunk retry failed: {inner}", exc_info=True)
+                return 0
+
         finally:
             session.close()
     

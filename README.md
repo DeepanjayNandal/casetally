@@ -103,6 +103,7 @@ Browser
 - Chunks text by section, writes to `legal_chunks`
 - Idempotent: SHA256 version hash per section — re-runs skip unchanged content, update changed content, and reset embeddings only when text changes
 - Stale-chunk deactivation runs once per citation at the end of a run, using the union of every `clause_id` seen, so a citation appearing as multiple section headings cannot retire the chunks written by its own earlier occurrence
+- Verified corpus-wide: a full re-run across all 53 titles skips all 50,915 sections with 0 inserts, 0 updates, and 0 deactivations, leaving the database unchanged
 
 ### `casetally-infrastructure` — Docker Compose configs
 

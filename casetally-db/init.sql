@@ -49,6 +49,11 @@ CREATE TABLE IF NOT EXISTS legal_chunks (
     version_hash VARCHAR(64) NOT NULL,   -- SHA256 of source
     is_current BOOLEAN DEFAULT TRUE,     -- Handle statute updates
     effective_date DATE,                 -- When law took effect
+
+    -- Embedding failure tracking: the worker's queue is "embedding IS NULL",
+    -- so a chunk that always fails to encode would be retried forever and
+    -- starve everything behind it. Rows at or above the retry cap are skipped.
+    retry_count INTEGER NOT NULL DEFAULT 0,
     
     -- Timestamps
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

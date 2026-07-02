@@ -27,5 +27,6 @@ class LegalChunk(Base):
     version_hash = Column(String(64), nullable=False)
     is_current = Column(Boolean, default=True)
     effective_date = Column(Date)
+    retry_count = Column(Integer, nullable=False, server_default="0")
     created_at = Column(TIMESTAMP, server_default=func.now())
     updated_at = Column(TIMESTAMP, server_default=func.now())

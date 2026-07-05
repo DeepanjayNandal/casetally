@@ -35,8 +35,8 @@ Browser
                              Score fusion
                              (hybrid_score)
                                     ▲
-                          EmbeddingWorker
-                          (offline, Redis-tracked)
+                             EmbeddingWorker
+               (offline, NULL-column queue, Redis-tracked)
 ```
 
 ---

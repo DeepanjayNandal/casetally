@@ -29,6 +29,11 @@ build/
 *.env
 !.env.local.example
 !.env.prod.example
+# gitignore does not apply to already-tracked files; this one was
+# committed before the rule existed and had to be removed explicitly.
+**/.env.local
+**/.env.prod
+
 
 # Data archive — too large for git
 casetally-data-archive/

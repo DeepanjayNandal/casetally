@@ -44,14 +44,13 @@ services:
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
       - EMBEDDING_DEVICE=cpu
       - SEARCH_EMBEDDING_ENABLED=${SEARCH_EMBEDDING_ENABLED:-true}
-      - OLLAMA_URL=${OLLAMA_URL:-http://casetally-ollama:11434}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma2:2b}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_MODEL=${GROQ_MODEL:-openai/gpt-oss-20b}
+      - GROQ_REASONING_EFFORT=${GROQ_REASONING_EFFORT:-low}
     networks:
       - casetally-network
     depends_on:
       postgres:
-        condition: service_healthy
-      ollama:
         condition: service_healthy
     labels:
       - "traefik.enable=true"
@@ -103,27 +102,11 @@ services:
       redis:
         condition: service_healthy
 
-  ollama:
-    image: ollama/ollama:latest
-    container_name: casetally-ollama
-    restart: unless-stopped
-    volumes:
-      - ollama_data:/root/.ollama
-    networks:
-      - casetally-network
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
 volumes:
   postgres_data:
     name: casetally_postgres_data_prod
   redis_data:
     name: casetally_redis_data_prod
-  ollama_data:
-    name: casetally_ollama_data_prod
 
 networks:
   casetally-network:

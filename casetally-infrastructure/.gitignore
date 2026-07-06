@@ -4,8 +4,9 @@
 # .env
 .env.*
 !.env.example
-!.env.local
 !.env.prod.example
+# .env.local was previously un-ignored here, which is how a real password
+# reached the repository. Only .example templates may be committed.
 *.pem
 *.key
 *.crt

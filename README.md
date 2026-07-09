@@ -107,8 +107,8 @@ Browser
 
 ### `casetally-infrastructure` — Docker Compose configs
 
-- `docker-compose.local.yml` — full local stack
-- `docker-compose.prod.yml` — production stack with Traefik reverse proxy
+- `docker-compose.local.yml` — full local stack (postgres, redis, backend, worker, frontend, adminer)
+- `casetally-infra-prod/` — Traefik reverse proxy config and Let's Encrypt volume layout for a production deployment. The stack has never been deployed publicly.
 
 ---
 

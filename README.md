@@ -12,6 +12,16 @@ Ask any legal question in plain English. CaseTally rewrites your question into l
 
 ---
 
+## Screenshots
+
+![CaseTally home page showing the search entry point, with 53 U.S. Code titles and 47,207 sections indexed](docs/images/homepage.png)
+
+Answering *"copyright infringement damages"* — the streamed answer cites 17 U.S.C. § 504 and quotes the statutory text verbatim, with the ten retrieved sections ranked alongside it.
+
+![CaseTally answer view, showing a cited answer on the left and the ranked hybrid search sources on the right](docs/images/search-results.png)
+
+---
+
 ## System Architecture
 
 ```text

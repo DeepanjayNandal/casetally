@@ -102,7 +102,9 @@ Browser
 
 ### `casetally-workers` — Embedding Worker
 
-- Polls `legal_chunks WHERE embedding IS NULL`
+- Polls `legal_chunks WHERE embedding IS NULL AND is_current AND retry_count < MAX_EMBED_RETRIES` (default 3)
+- Claims each batch with `FOR UPDATE SKIP LOCKED`, so concurrent workers take disjoint rows instead of all selecting the same lowest ids; locks release on commit, so a crashed worker's rows requeue immediately
+- On batch failure, re-encodes the batch row by row and increments `retry_count` only on the chunk that raised, so one bad row cannot strand the other 99. The counter is written from a separate session because the batch transaction has already rolled back
 - Batch encodes via `sentence-transformers/all-MiniLM-L6-v2` on CPU
 - Writes 384-dim vectors back to DB in a single bulk executemany call
 - State tracked in Redis (IDLE → PROCESSING → IDLE) with heartbeat

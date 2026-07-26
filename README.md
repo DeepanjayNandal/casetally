@@ -92,6 +92,7 @@ Browser
 - `POST /v1/rewrite` — exposes query rewriting as a standalone endpoint
 - `GET /health/ready` — liveness + real DB ping
 - Query rewriting via `GroqService.rewrite_query()` before every retrieval
+- Vector search degrades to BM25-only when the embedding model is unavailable — the package failed to import, or `SEARCH_EMBEDDING_ENABLED=false` — and the response reports `embedding_used` so the path taken is visible. This covers the model being *unavailable*, not *failing*: a load or encode error mid-request propagates as a 500
 
 ### `casetally-db` — PostgreSQL 16 + pgvector
 
@@ -99,6 +100,7 @@ Browser
 - HNSW index on `embedding` column for sub-linear ANN lookup
 - GIN index on `search_vector` for BM25
 - Triggers auto-update `search_vector` on insert/update
+- `legal_artifacts` rows carry the same `version_hash` as the chunk they belong to, so a search result and the source PDF it links to cannot drift apart when a statute is re-ingested
 
 ### `casetally-workers` — Embedding Worker
 
@@ -107,7 +109,7 @@ Browser
 - On batch failure, re-encodes the batch row by row and increments `retry_count` only on the chunk that raised, so one bad row cannot strand the other 99. The counter is written from a separate session because the batch transaction has already rolled back
 - Batch encodes via `sentence-transformers/all-MiniLM-L6-v2` on CPU
 - Writes 384-dim vectors back to DB in a single bulk executemany call
-- State tracked in Redis (IDLE → PROCESSING → IDLE) with heartbeat
+- State tracked in Redis (IDLE → PROCESSING → IDLE) with heartbeat. State and metrics keys expire after 300s, the heartbeat after 30s — the gap is deliberate, so an observer can tell a dead worker from an idle one
 
 ### `casetally-ingestion` — Ingestion CLI
 

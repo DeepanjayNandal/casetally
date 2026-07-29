@@ -403,7 +403,7 @@ function SearchResults() {
                   fontWeight: 500,
                 }}
               >
-                Retrieved {latestSources.length} sources · Hybrid search (BM25 + vector)
+                Retrieved {latestSources.length} sources · Hybrid search (full-text + vector)
               </p>
             )}
 

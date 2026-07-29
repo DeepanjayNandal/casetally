@@ -6,7 +6,7 @@ A legal research platform for searching U.S. statutes, codes, and regulations us
 
 ## What It Does
 
-Ask any legal question in plain English. CaseTally rewrites your question into legal terminology, searches 83,706 U.S. Code chunks using hybrid BM25 + vector search, and streams a cited answer back in real time.
+Ask any legal question in plain English. CaseTally rewrites your question into legal terminology, searches 83,706 U.S. Code chunks using hybrid full-text + vector search, and streams a cited answer back in real time.
 
 > "Can my boss fire me?" → rewrites to → "wrongful termination at-will employment exceptions" → retrieves exact statutes → streams grounded answer
 
@@ -38,8 +38,8 @@ Browser
                                     │
                            ┌────────┴────────┐
                            ▼                 ▼
-                         BM25            pgvector
-                       tsvector       HNSW cosine sim
+                      full-text         pgvector
+                     ts_rank_cd      HNSW cosine sim
                            └────────┬────────┘
                                     ▼
                              Score fusion
@@ -60,10 +60,10 @@ Browser
    └─ Rewrites to: "tax debt collection unpaid tax penalties tax lien 26 usc 6851"
 
 3. Hybrid Search (PostgreSQL)
-   ├─ BM25:   ts_rank_cd(search_vector, plainto_tsquery(...))   top 50
+   ├─ Lexical: ts_rank_cd(search_vector, plainto_tsquery(...))  top 50
    ├─ Vector: embedding <=> query_vector  [HNSW index]          top 50
    ├─ Normalize scores 0→1 independently
-   └─ Fuse:   hybrid_score = 0.5*bm25 + 0.5*vector → top 3
+   └─ Fuse:   hybrid_score = 0.5*lexical + 0.5*vector → top 3
 
 4. LLM Answer (Groq, streaming)
    ├─ Top 3 chunk snippets sent as context
@@ -92,13 +92,13 @@ Browser
 - `POST /v1/rewrite` — exposes query rewriting as a standalone endpoint
 - `GET /health/ready` — liveness + real DB ping
 - Query rewriting via `GroqService.rewrite_query()` before every retrieval
-- Vector search degrades to BM25-only when the embedding model is unavailable — the package failed to import, or `SEARCH_EMBEDDING_ENABLED=false` — and the response reports `embedding_used` so the path taken is visible. This covers the model being *unavailable*, not *failing*: a load or encode error mid-request propagates as a 500
+- Vector search degrades to full-text-only when the embedding model is unavailable — the package failed to import, or `SEARCH_EMBEDDING_ENABLED=false` — and the response reports `embedding_used` so the path taken is visible. This covers the model being *unavailable*, not *failing*: a load or encode error mid-request propagates as a 500
 
 ### `casetally-db` — PostgreSQL 16 + pgvector
 
 - `legal_chunks` table — 83,706 rows, each with `text_content`, `search_vector` (tsvector), `embedding` (vector(384))
 - HNSW index on `embedding` column for sub-linear ANN lookup
-- GIN index on `search_vector` for BM25
+- GIN index on `search_vector` for full-text search
 - Triggers auto-update `search_vector` on insert/update
 - `legal_artifacts` rows carry the same `version_hash` as the chunk they belong to, so a search result and the source PDF it links to cannot drift apart when a statute is re-ingested
 
@@ -133,7 +133,7 @@ Browser
 | Frontend | Next.js 16, React 19, TypeScript |
 | Backend | Python 3.11, FastAPI, SQLAlchemy 2.0 |
 | Database | PostgreSQL 16 + pgvector |
-| Search | Hybrid BM25 + vector, HNSW indexing |
+| Search | Hybrid PostgreSQL full-text (`ts_rank_cd`) + vector, HNSW indexing |
 | Embeddings | sentence-transformers (all-MiniLM-L6-v2, 384-dim) |
 | LLM | Groq API (openai/gpt-oss-20b) |
 | Cache | Redis (worker state) |
@@ -144,7 +144,7 @@ Browser
 ## Key Technical Decisions
 
 **Why hybrid search?**
-Legal text has precise terminology — `§ 1983`, `habeas corpus`, `mens rea`. BM25 catches exact statute numbers that semantic search misses. Vector search catches meaning when phrasing differs. Fusion beats either alone.
+Legal text has precise terminology — `§ 1983`, `habeas corpus`, `mens rea`. PostgreSQL full-text search, ranked with `ts_rank_cd` cover density, catches exact statute numbers that semantic search misses. Vector search catches meaning when phrasing differs. Fusion beats either alone.
 
 **Why query rewriting?**
 User language and legal language don't match. "Can my boss fire me?" contains none of the words in the statutes that answer it, and rewrites to "termination rights employee termination unlawful dismissal at-will employment" before retrieval. Measured effect is a trade-off: MRR improves 10% while Precision@3 and Recall@5 drop slightly, so the right statute ranks higher but the top-5 window gets noisier.
@@ -156,7 +156,7 @@ HNSW (Hierarchical Navigable Small World) provides better recall, handles insert
 Token streaming is one-directional (server → client). SSE is HTTP-native, auto-reconnects, and works through proxies — no overhead of a persistent bidirectional socket.
 
 **Why PostgreSQL for vectors instead of a dedicated vector DB?**
-Single database keeps BM25 and vector search in one query with no cross-service joins. pgvector on PostgreSQL covers both at zero extra cost or infrastructure complexity.
+Single database keeps full-text and vector search in one query with no cross-service joins. pgvector on PostgreSQL covers both at zero extra cost or infrastructure complexity.
 
 ---
 
@@ -200,7 +200,7 @@ though `18 U.S.C. § 1343` is present with correct text. Three factors compound:
 requires every term to appear in a single chunk, 512-word chunking scatters the statute's terms
 across chunks, and "wire fraud" is a colloquial label absent from statutory text that reads
 "scheme or artifice to defraud" transmitted "by means of wire". The governing chunk contains
-neither "criminal" nor any form of "penalty", so BM25 excludes it before ranking begins.
+neither "criminal" nor any form of "penalty", so the full-text branch excludes it before ranking begins.
 
 Full per-query output for both modes is committed to `scripts/eval_results.txt`.
 

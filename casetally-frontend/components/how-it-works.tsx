@@ -11,7 +11,7 @@ const STEPS = [
     icon: Brain,
     heading: "AI Analysis",
     description:
-      "Our AI searches across 54 titles of federal law using hybrid BM25 + vector search.",
+      "Our AI searches across 53 titles of federal law using hybrid full-text + vector search.",
   },
   {
     icon: FileCheck,

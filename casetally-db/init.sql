@@ -35,9 +35,9 @@ CREATE TABLE IF NOT EXISTS legal_chunks (
     -- Content
     text_content TEXT NOT NULL,
     
-    -- Hybrid search: Vector (semantic) + BM25 (keyword)
+    -- Hybrid search: Vector (semantic) + full-text (keyword)
     embedding VECTOR(384),              -- Sentence transformer embeddings
-    search_vector tsvector,              -- Auto-generated for BM25 search
+    search_vector tsvector,              -- Auto-generated for full-text search
     
     -- Metadata
     jurisdiction VARCHAR(100) DEFAULT 'Federal',
@@ -317,7 +317,7 @@ ON CONFLICT (username) DO NOTHING;
 -- =============================================================================
 
 COMMENT ON TABLE users IS 'User accounts for the law library system';
-COMMENT ON TABLE legal_chunks IS 'Citation-indexed chunks for hybrid search (BM25 + vector) and LLM context';
+COMMENT ON TABLE legal_chunks IS 'Citation-indexed chunks for hybrid search (full-text + vector) and LLM context';
 COMMENT ON TABLE legal_artifacts IS 'Display metadata (PDF pages, HTML links, etc.) for citations';
 COMMENT ON TABLE search_queries IS 'Log of user search queries for analytics';
 COMMENT ON TABLE notifications IS 'User notifications and alerts';
@@ -326,7 +326,7 @@ COMMENT ON TABLE ingestion_runs IS 'Track scraper execution and version changes'
 COMMENT ON COLUMN legal_chunks.citation IS 'Primary legal citation (e.g., "1 U.S.C. § 1")';
 COMMENT ON COLUMN legal_chunks.clause_id IS 'Unique clause identifier (e.g., "1 U.S.C. § 1, cl. 2")';
 COMMENT ON COLUMN legal_chunks.embedding IS 'Vector embedding for semantic search (sentence-transformers/all-MiniLM-L6-v2, 384 dimensions)';
-COMMENT ON COLUMN legal_chunks.search_vector IS 'Auto-generated tsvector for BM25 full-text search';
+COMMENT ON COLUMN legal_chunks.search_vector IS 'Auto-generated tsvector for PostgreSQL full-text search, ranked with ts_rank_cd';
 COMMENT ON COLUMN legal_chunks.tags IS 'Deterministic tags extracted from citation structure';
 COMMENT ON COLUMN legal_chunks.version_hash IS 'SHA256 hash of source document for version control';
 COMMENT ON COLUMN legal_chunks.is_current IS 'TRUE for current version, FALSE for historical versions';
@@ -348,7 +348,7 @@ COMMENT ON VIEW current_citations IS 'Deduplicated list of current citations wit
 --
 -- Key improvements:
 --   1. Citation-centric design (not document-centric)
---   2. Hybrid search (BM25 + vector, not just vector)
+--   2. Hybrid search (full-text + vector, not just vector)
 --   3. Version control (prevents search/PDF drift)
 --   4. Flexible artifacts (supports PDF, HTML, XML, API)
 --   5. Multi-source ready (US Code, state codes, case law)

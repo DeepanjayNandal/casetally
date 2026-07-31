@@ -14,7 +14,7 @@ API service for legal search and LLM-powered streaming answers.
 This service owns:
 
 - Query rewriting — normalizes conversational questions into legal terminology before retrieval
-- BM25 lexical retrieval against `legal_chunks.search_vector`
+- Lexical retrieval against `legal_chunks.search_vector` using PostgreSQL full-text search
 - Vector retrieval against `legal_chunks.embedding` (HNSW index)
 - Score fusion for hybrid ranking
 - LLM answer generation via Groq API with SSE token streaming
@@ -38,7 +38,7 @@ This service does not own:
 ## Request Pipeline — `/v1/chat/stream`
 
 1. Rewrite user query into legal terminology via Groq (`rewrite_query`)
-2. BM25 retrieval using `plainto_tsquery` + `ts_rank_cd`
+2. Lexical retrieval using `plainto_tsquery` + `ts_rank_cd` cover-density ranking
 3. Vector retrieval using pgvector HNSW cosine distance (`embedding <=> query_vector`)
 4. Score normalization + weighted fusion into `hybrid_score`
 5. Top 3 chunks sent to Groq (`openai/gpt-oss-20b`) for answer generation
@@ -78,7 +78,7 @@ curl -X POST http://localhost:3001/v1/search \
 - `app/main.py` — app init, health routes
 - `app/api/search.py` — search endpoint
 - `app/routers/chat.py` — chat/stream endpoint, query rewriting orchestration
-- `app/services/search.py` — hybrid BM25 + vector retrieval
+- `app/services/search.py` — hybrid full-text + vector retrieval
 - `app/services/groq_service.py` — query rewriting + LLM streaming
 - `app/db.py` — SQLAlchemy engine/session
 - `app/schemas.py` — request/response models

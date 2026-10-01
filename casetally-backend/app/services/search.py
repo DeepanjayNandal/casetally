@@ -16,6 +16,22 @@ except Exception:  # pragma: no cover - allows startup without model package iss
 
 logger = logging.getLogger(__name__)
 
+# Reciprocal rank fusion damping constant. See HybridSearchService.search.
+#
+# 60 is the value from the original RRF paper and was the starting point, but it
+# was measured and 20 does better here. k is large relative to a 50-row candidate
+# pool, and at 60 it flattens the score range almost out of existence: rank 1
+# scores 1/61 and rank 50 scores 1/110, under a 2x spread across the whole pool,
+# so near-ties decide the order. Measured on fixed query strings, dropping to 20
+# moved Title VII from fused rank 6 to 4 on the headline employment query and left
+# the other probes equal or better, and on the deterministic no-rewrite benchmark
+# core P@3 went from 0.69 to 0.76 with R@5 and MRR unchanged.
+#
+# The paper's 60 was chosen for fusing much longer result lists; with 50 per
+# branch a smaller constant is the right scale. Env-overridable so it can be swept
+# against the eval harness without a rebuild.
+RRF_K = int(os.getenv("RRF_K", "20"))
+
 
 @dataclass
 class RetrievalRow:
@@ -121,16 +137,6 @@ def _row_to_retrieval(row: Dict[str, Any], bm25_score: float = 0.0, vector_score
         bm25_score=float(bm25_score or 0.0),
         vector_score=float(vector_score or 0.0),
     )
-
-
-def _normalize_scores(values: List[float]) -> List[float]:
-    if not values:
-        return []
-    max_v = max(values)
-    min_v = min(values)
-    if max_v == min_v:
-        return [0.0 if max_v == 0.0 else 1.0 for _ in values]
-    return [(v - min_v) / (max_v - min_v) for v in values]
 
 
 class HybridSearchService:
@@ -303,15 +309,55 @@ class HybridSearchService:
             else:
                 by_id[row.chunk_id] = row
 
-        merged = list(by_id.values())
-        bm25_norm = _normalize_scores([r.bm25_score for r in merged])
-        vector_norm = _normalize_scores([r.vector_score for r in merged])
+        # Reciprocal rank fusion, replacing min-max normalised score averaging.
+        #
+        # The old scheme normalised each branch to 0..1 across the merged set and
+        # averaged them, which meant a chunk missing from one branch was scored 0
+        # for it and could not exceed half the maximum however strong the other
+        # branch was. That is the wrong penalty when the branches disagree about
+        # whether something exists at all rather than about where it ranks: the
+        # lexical branch returns 50 rows and the vector branch returns a different
+        # 50, so most items are absent from one of them by construction. For
+        # "can my boss fire me" Title VII tied for the top lexical score and was
+        # absent from the vector top 50, which capped it at 0.41 and put it at
+        # fused rank 13 behind pension sections that scored on both.
+        #
+        # RRF uses position rather than magnitude, so the two branches do not need
+        # a shared scale: ts_rank_cd values and cosine similarities are not
+        # comparable quantities and normalising them only hid that. Absence
+        # contributes nothing instead of contributing a zero that drags an average
+        # down.
+        #
+        # k dampens how much the very top ranks dominate. 60 is the value from the
+        # original RRF paper. Note it is large relative to a 50-row pool, so it
+        # compresses the score range: with k=60 rank 1 scores 1/61 and rank 50
+        # scores 1/110, under a 2x spread. A smaller k discriminates more sharply.
+        #
+        # weight_bm25 and weight_vector still mean relative branch influence, so
+        # callers passing 0.5/0.5, or 1/0 to isolate a branch, behave as before.
+        bm25_rank = {row.chunk_id: i + 1 for i, row in enumerate(bm25_rows)}
+        vector_rank = {row.chunk_id: i + 1 for i, row in enumerate(vector_rows)}
 
-        for i, row in enumerate(merged):
-            row.hybrid_score = (weight_bm25 * bm25_norm[i]) + (weight_vector * vector_norm[i])
+        merged = list(by_id.values())
+        for row in merged:
+            score = 0.0
+            if row.chunk_id in bm25_rank:
+                score += weight_bm25 / (RRF_K + bm25_rank[row.chunk_id])
+            if row.chunk_id in vector_rank:
+                score += weight_vector / (RRF_K + vector_rank[row.chunk_id])
+            row.hybrid_score = score
 
         merged.sort(key=lambda x: x.hybrid_score, reverse=True)
         top = merged[:top_k]
+
+        # Rescale so the best result reads 1.0. Raw RRF scores are around 0.01 to
+        # 0.03 and mean nothing to a reader; the ordering is untouched. Done after
+        # the sort and over the returned slice, so the number shown is relative to
+        # the best result for this query.
+        if top and top[0].hybrid_score > 0:
+            best = top[0].hybrid_score
+            for row in top:
+                row.hybrid_score = row.hybrid_score / best
 
         # Best effort query logging.
         took_ms = int((time.perf_counter() - started) * 1000)

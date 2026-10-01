@@ -1,9 +1,15 @@
-﻿fastapi==0.116.1
+fastapi==0.116.1
 uvicorn[standard]==0.35.0
 sqlalchemy==2.0.36
 psycopg2-binary==2.9.10
 pgvector==0.3.6
 pydantic==2.10.6
+# Installed from the PyTorch CPU index in the Dockerfile BEFORE this file,
+# so sentence-transformers finds it already satisfied and never resolves
+# the default build. Pinned here so the version is recorded, and kept
+# identical to casetally-workers so query and stored embeddings come from
+# the same torch.
+torch==2.5.1
 sentence-transformers==3.2.1
 numpy==2.1.3
 python-dotenv==1.0.1

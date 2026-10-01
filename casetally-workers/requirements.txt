@@ -3,6 +3,9 @@ sqlalchemy==2.0.23
 psycopg2-binary==2.9.9
 pgvector==0.2.3
 sentence-transformers==3.2.1
+# Installed from the PyTorch CPU index in the Dockerfile BEFORE this file.
+# Kept identical to casetally-backend so query and stored embeddings come
+# from the same torch.
 torch==2.5.1
 transformers==4.46.0
 numpy==2.1.3

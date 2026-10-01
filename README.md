@@ -213,16 +213,34 @@ now the primary way to run CaseTally locally. Docker Compose still works and is
 documented below, but Kubernetes is where the components, probes, scaling and
 failure behaviour actually live.
 
+### Cluster prerequisites
+
+- Docker Desktop, with at least 6 GiB allocated to its VM
+- [kind](https://kind.sigs.k8s.io/) and `kubectl`
+- A Groq API key (free at console.groq.com)
+
+Create `casetally-infrastructure/k8s/.env.k8s` with two unquoted lines before the
+first run. It is gitignored and never committed:
+
+```bash
+POSTGRES_PASSWORD=choose-one
+GROQ_API_KEY=your-key
+```
+
+### Bring it up
+
 ```bash
 cd casetally-infrastructure/k8s
 ./up.sh          # cluster, images, manifests, corpus restore, smoke tests
 ./down.sh        # delete the cluster
 ```
 
-Then open <http://localhost>.
+Then open <http://localhost>. A from-scratch bring-up takes about three minutes
+when the images already exist, and `up.sh` prints a per-phase timing breakdown.
 
 `up.sh` is idempotent and reuses images it has already built. Pass `--rebuild`
-after changing application code.
+after changing application code, and `--skip-data` to deploy without loading the
+corpus. `down.sh --keep-data` drops the workloads but keeps the database.
 
 ### What runs where
 

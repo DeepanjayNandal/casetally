@@ -33,6 +33,40 @@ class EmbeddingWorker:
         self.poll_interval = int(os.getenv("POLL_INTERVAL", "5"))
         self.max_retries = int(os.getenv("MAX_EMBED_RETRIES", "3"))
         self.running = False
+
+        # Local liveness marker, written from the main loop.
+        #
+        # The Redis heartbeat below is for observability: an operator reads it
+        # to tell a dead worker from an idle one. It is the wrong thing for a
+        # Kubernetes liveness probe, because it depends on Redis. Redis here
+        # uses a Recreate strategy, so when it restarts every worker's Redis
+        # check would fail simultaneously and Kubernetes would restart the
+        # entire worker tier over an outage in a service they do not need to
+        # make progress. Their real queue is "embedding IS NULL" in Postgres.
+        #
+        # This file has no external dependency. It is touched from the main
+        # loop, not a thread, so if the loop wedges the file goes stale and
+        # liveness correctly fails. A thread would keep answering while the
+        # loop was stuck, which is exactly the failure a liveness probe exists
+        # to catch.
+        self.liveness_file = os.getenv("LIVENESS_FILE", "/tmp/heartbeat")
+
+        # Remove any marker left by a previous container before the loop starts.
+        #
+        # Today /tmp is the container's own writable layer, which a restart
+        # recreates, so no stale file can survive. That is a property of the
+        # current manifest, not of this code: the moment anyone mounts an
+        # emptyDir at /tmp, the file outlives the process that wrote it and a
+        # startup probe could pass on a marker written by a worker that has
+        # already died. Deleting it here makes the guarantee belong to the
+        # worker instead of to a volume choice made elsewhere.
+        try:
+            os.remove(self.liveness_file)
+            logger.info(f"Removed stale liveness file {self.liveness_file} from a previous run")
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            logger.warning(f"Could not remove {self.liveness_file}: {exc}")
         
         # Validate environment
         db_url = os.getenv("DATABASE_URL")
@@ -256,6 +290,19 @@ class EmbeddingWorker:
         finally:
             session.close()
     
+    def _touch_liveness(self):
+        """Update the local liveness marker's mtime.
+
+        Called from the main loop only. Failure to write is logged but never
+        fatal: an unwritable /tmp should surface as a failed liveness probe,
+        not as a crashed worker.
+        """
+        try:
+            with open(self.liveness_file, "w") as fh:
+                fh.write(str(int(time.time())))
+        except Exception as exc:
+            logger.warning(f"Could not write liveness file {self.liveness_file}: {exc}")
+
     def run(self):
         """Main worker loop"""
         try:
@@ -271,15 +318,24 @@ class EmbeddingWorker:
             logger.info("Worker ready and waiting for work")
             
             last_heartbeat = time.time()
-            
+
+            # Write it once before the first batch so the file exists as soon
+            # as the loop is genuinely running, rather than only after the
+            # first 10 second heartbeat window elapses.
+            self._touch_liveness()
+
             # Main processing loop
             while self.running:
+                # Local liveness marker, every iteration. Cheap, and unlike the
+                # Redis heartbeat below it cannot be broken by Redis being down.
+                self._touch_liveness()
+
                 # Send heartbeat every 10 seconds
                 now = time.time()
                 if now - last_heartbeat >= 10:
                     self.state_manager.heartbeat()
                     last_heartbeat = now
-                
+
                 # Process a batch
                 processed = self.process_batch()
                 

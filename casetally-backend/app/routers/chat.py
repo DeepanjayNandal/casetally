@@ -16,6 +16,12 @@ router = APIRouter(prefix="/v1", tags=["chat"])
 
 logger = logging.getLogger(__name__)
 
+# How deep the sources panel shows, and how much of that the LLM reasons over.
+# One retrieval serves both: the answer always sees the head of exactly the list
+# the user is shown, so the two cannot disagree.
+SOURCES_TOP_K = 10
+ANSWER_TOP_K = 3
+
 
 class ChatRequest(BaseModel):
     message: str
@@ -41,16 +47,40 @@ def _stream(query: str, history: List[Dict[str, Any]]):
             except Exception as exc:
                 logger.warning("query rewriting failed, using original: %s", exc)
 
+        # One retrieval, used for both the answer and the sources panel.
+        #
+        # The panel used to call /v1/search separately with the RAW question while
+        # this endpoint searched the REWRITTEN one, at a different depth. Two
+        # independent retrievals over two different query strings, so the panel
+        # could display the correct statute while the answer, reasoning over a
+        # different set, said it had no relevant information. That is not a
+        # ranking bug, it is two answers to two different questions presented as
+        # one result.
+        #
+        # Retrieve the panel's depth once and give the LLM the head of the same
+        # list, so the answer is always reasoning over the top of exactly what the
+        # user is shown.
         results = search_service.search(
             db=db,
             query=search_query,
-            top_k=3,
+            top_k=SOURCES_TOP_K,
             bm25_k=50,
             vector_k=50,
             weight_bm25=0.5,
             weight_vector=0.5,
         )
-        chunks = results["results"]
+        sources = results["results"]
+        chunks = sources[:ANSWER_TOP_K]
+
+        # Emitted before the answer so the panel fills while tokens are still
+        # streaming, and so it is populated even if the LLM call fails.
+        yield _event(json.dumps({
+            "type": "sources",
+            "results": sources,
+            "took_ms": results.get("took_ms"),
+            "query": search_query,
+            "embedding_used": results.get("embedding_used"),
+        }))
 
         if groq_service.is_available() and chunks:
             try:

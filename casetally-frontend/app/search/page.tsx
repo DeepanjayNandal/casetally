@@ -64,30 +64,12 @@ function SearchResults() {
     setTurns((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)))
   }
 
-  const fetchSources = async (q: string, turnId: string) => {
-    try {
-      const res = await fetch(`${BACKEND_URL}/v1/search`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query: q,
-          top_k: 10,
-          bm25_k: 50,
-          vector_k: 50,
-          weight_bm25: 0.5,
-          weight_vector: 0.5,
-        }),
-      })
-      if (!res.ok) return
-      const data = await res.json()
-      updateTurn(turnId, {
-        sources: data.results || [],
-        tookMs: data.took_ms,
-      })
-    } catch {
-      // best-effort
-    }
-  }
+  // The sources panel is no longer fetched separately. /v1/chat/stream emits a
+  // "sources" event carrying the retrieval it actually used, so the panel and the
+  // answer are the same result set by construction. Previously this component
+  // called /v1/search with the RAW question while the answer searched the
+  // REWRITTEN one, at a different depth, so the panel could show the right
+  // statute while the answer said it had no relevant information.
 
   const runSearch = useCallback(async (q: string) => {
     if (!q.trim()) return
@@ -154,6 +136,12 @@ function SearchResults() {
           if (data === "[DONE]") break
           try {
             const json = JSON.parse(data)
+            // The retrieval the answer is actually built from. Arrives before the
+            // first token, so the panel fills while the answer is still
+            // streaming, and it is populated even when the LLM call fails.
+            if (json.type === "sources" && Array.isArray(json.results)) {
+              updateTurn(turnId, { sources: json.results })
+            }
             if (json.type === "text" && json.chunk) {
               if (firstToken) {
                 firstToken = false
@@ -176,7 +164,6 @@ function SearchResults() {
         tookMs: Date.now() - startMs,
       })
 
-      fetchSources(q, turnId)
     } catch (err: unknown) {
       if ((err as Error).name === "AbortError") {
         // Always clean up state on abort so spinner doesn't hang

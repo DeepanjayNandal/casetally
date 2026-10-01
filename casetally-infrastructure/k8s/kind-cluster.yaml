@@ -1,0 +1,57 @@
+# kind cluster for CaseTally. Single node, local only.
+#
+#   kind create cluster --config casetally-infrastructure/k8s/kind-cluster.yaml
+#
+# Creates kubectl context "kind-casetally".
+#
+# Host ports 80/443 are mapped so an ingress controller can be reached at
+# http://localhost later. These deliberately avoid the ports docker compose
+# already holds (3000 frontend, 3001 backend, 5433 postgres, 6380 redis), so
+# the compose stack and the cluster can run side by side during migration.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: casetally
+
+nodes:
+  - role: control-plane
+
+    # Pinned by digest, not just by tag. "v1.37.0" is a moving target if the
+    # upstream tag is ever re-pushed; the digest is not. Recreating this
+    # cluster six months from now gives byte-identical node software.
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+
+    # ingress-ready=true is the nodeSelector that the ingress-nginx kind
+    # manifest looks for. Set now even though no controller is installed yet:
+    # adding it later means recreating the cluster, which destroys the
+    # restored 83k-row database and forces a second dump/restore cycle.
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 80
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 443
+        protocol: TCP
+
+    # The 49 source PDFs (918M) that legal_artifacts rows point at. The API
+    # serves them with FileResponse on whatever absolute path the database
+    # holds, so the bytes have to be reachable from inside a pod.
+    #
+    # This is the ONLY file in the repo that names a path on this machine, and
+    # it is a local-development file by nature. Everything downstream, the pod
+    # specs and the 26,737 database rows alike, refers to /data/uscode, so the
+    # API Deployment stays portable to any cluster.
+    #
+    # readOnly at BOTH layers: here, and again on the pod's hostPath volume.
+    # Nothing in CaseTally writes to the archive, and a read-only mount means a
+    # compromised or buggy pod cannot corrupt the only copy of the source data.
+    extraMounts:
+      - hostPath: /Users/deepanjaynandal/Documents/MyFiles/vsCodeFiles/OpenRights/openrights_full_infrastructure/casetally-data-archive/openrights-data-archive/uscode
+        containerPath: /data/uscode
+        readOnly: true

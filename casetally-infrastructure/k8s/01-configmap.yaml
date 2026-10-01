@@ -1,0 +1,72 @@
+# Non-secret configuration for every CaseTally component.
+#
+# The split is deliberate: anything whose leak would matter lives in the
+# Secret, which holds POSTGRES_PASSWORD, GROQ_API_KEY and DATABASE_URL. The URL
+# is secret only because it embeds the password. Everything else is here, in
+# plain text, readable in a code review and diffable across environments.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: casetally-config
+  namespace: casetally
+  labels:
+    app.kubernetes.io/part-of: casetally
+data:
+  # --- Postgres (consumed by the StatefulSet) -------------------------------
+  POSTGRES_USER: "casetally"
+  POSTGRES_DB: "casetally_law"
+
+  # PGDATA points at a SUBDIRECTORY of the mount, not the mount root. The
+  # volume root on a PVC is never empty (lost+found on some CSI drivers, and
+  # the mount point itself), and initdb refuses to bootstrap into a non-empty
+  # directory. The compose stack uses the same layout, so the two are
+  # structurally identical on disk.
+  PGDATA: "/var/lib/postgresql/data/pgdata"
+
+  # --- Redis (Step 2) -------------------------------------------------------
+  REDIS_HOST: "casetally-redis"
+  REDIS_PORT: "6379"
+
+  # --- Embeddings (API + worker) -------------------------------------------
+  EMBEDDING_MODEL: "sentence-transformers/all-MiniLM-L6-v2"
+  EMBEDDING_DEVICE: "cpu"
+  SEARCH_EMBEDDING_ENABLED: "true"
+
+  # Both the API and worker images bake the model in at /opt/hf, so neither
+  # should ever reach out to HuggingFace. This makes that explicit and
+  # fail-fast: if a cache were ever missing, the pod errors at startup instead
+  # of silently downloading 90MB on its first encode.
+  #
+  # Shared here rather than per-Deployment because it is now true of every
+  # image that loads the model.
+  HF_HUB_OFFLINE: "1"
+
+  # --- Groq (API) -----------------------------------------------------------
+  # The model id is config, not a secret. Only the key is sensitive.
+  GROQ_MODEL: "openai/gpt-oss-20b"
+  GROQ_REASONING_EFFORT: "low"
+
+  # --- Embedding worker tuning ---------------------------------------------
+  BATCH_SIZE: "100"
+  POLL_INTERVAL: "5"
+
+  # --- Ingestion source data ------------------------------------------------
+  # Ingestion derives artifact file_path from the REAL on-disk location of each
+  # PDF (plugins/uscode.py passes str(pdf_file), globbed from uscode_dir), so
+  # pointing it at /data/uscode is what makes a re-ingest write exactly the
+  # paths already in the database. Get this wrong and a re-run silently
+  # reintroduces host paths that no pod can resolve.
+  #
+  # USCODE_DATA_DIR is the highest-priority override in _resolve_uscode_dir.
+  # CASETALLY_DATA_DIR is set too so the --data-dir default agrees with it.
+  # The same directory holds both the 53 source HTML files and the 49 PDFs.
+  USCODE_DATA_DIR: "/data/uscode"
+  CASETALLY_DATA_DIR: "/data"
+
+  # --- Frontend -------------------------------------------------------------
+  # NEXT_PUBLIC_BACKEND_URL is deliberately NOT here. Next.js inlines
+  # NEXT_PUBLIC_* variables into the client bundle at BUILD time, so setting it
+  # as a runtime env var on the pod does nothing. It belongs as a --build-arg on
+  # the frontend image, which is where compose already sets it. Listing it in a
+  # runtime ConfigMap would imply you can change the backend URL by editing this
+  # file and restarting, which is false.

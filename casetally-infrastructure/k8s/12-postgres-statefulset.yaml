@@ -1,0 +1,204 @@
+# PostgreSQL 16 + pgvector, single replica.
+#
+# StatefulSet rather than Deployment: the pod owns a PVC that must survive a
+# reschedule and reattach to the SAME pod identity. A Deployment's
+# ReadWriteOnce volume would deadlock on rollout, because the new pod cannot attach
+# the volume until the old one releases it, and the old one is not torn down
+# until the new one is ready.
+#
+# Replicas is 1 and stays 1. Postgres does not scale by adding pods; a second
+# replica would need streaming replication and a leader election, which is a
+# different system. The StatefulSet buys ordered, stable, single-writer
+# identity, not horizontal scale.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: casetally-postgres
+  namespace: casetally
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: casetally
+spec:
+  serviceName: casetally-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+      app.kubernetes.io/part-of: casetally
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: casetally
+    spec:
+      # Postgres treats SIGTERM as a SMART shutdown: it waits for every client
+      # to disconnect voluntarily, which can outlive the grace period and earn
+      # a SIGKILL, meaning crash recovery on the next boot. The preStop hook
+      # below forces a FAST shutdown instead; 60s gives it room to flush.
+      terminationGracePeriodSeconds: 60
+
+      securityContext:
+        # postgres is uid/gid 999 in this image (verified with `id postgres`).
+        # fsGroup makes the freshly-provisioned PVC group-writable by it.
+        fsGroup: 999
+
+      containers:
+        - name: postgres
+          # Pinned by digest. The "pg16" tag is a moving pointer that advances
+          # with every 16.x patch release; the digest is immutable. This one is
+          # PostgreSQL 16.15 with pgvector 0.8.6.
+          image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: casetally-config
+                  key: POSTGRES_USER
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: casetally-config
+                  key: POSTGRES_DB
+            - name: PGDATA
+              valueFrom:
+                configMapKeyRef:
+                  name: casetally-config
+                  key: PGDATA
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: casetally-secrets
+                  key: POSTGRES_PASSWORD
+
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init-sql
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            # Postgres runs with dynamic_shared_memory_type=posix, which puts
+            # parallel-worker shared memory in /dev/shm. A container gets only
+            # 64MB there by default, which is not enough for parallel work over
+            # 83,706 rows: it fails with "could not resize shared memory
+            # segment". This replaces it with a larger tmpfs.
+            - name: dshm
+              mountPath: /dev/shm
+
+          lifecycle:
+            preStop:
+              exec:
+                # sh -c so $PGDATA expands; gosu because the container's main
+                # process is root (the image has no USER directive and the
+                # entrypoint drops privileges itself) and pg_ctl refuses to
+                # run as root.
+                command:
+                  - /bin/sh
+                  - -c
+                  - 'gosu postgres pg_ctl -D "$PGDATA" -m fast -w stop'
+
+          # All three probes use -h 127.0.0.1 to force TCP rather than the
+          # unix socket. This is not cosmetic: docker-entrypoint.sh line 297
+          # starts a TEMPORARY server with `-c listen_addresses=''` to run
+          # /docker-entrypoint-initdb.d scripts. A socket probe answers
+          # "ready" during that window, so the pod would go Ready while
+          # init.sql was still creating tables. TCP is closed until the real
+          # server starts, which is exactly the signal we want.
+          startupProbe:
+            exec:
+              command:
+                ["pg_isready", "-h", "127.0.0.1", "-p", "5432",
+                 "-U", "casetally", "-d", "casetally_law"]
+            periodSeconds: 5
+            timeoutSeconds: 5
+            # 60 x 5s = 5 minutes. Sized for the slowest legitimate start:
+            # first boot running initdb plus init.sql, or crash recovery
+            # replaying WAL. Until this passes, liveness is not evaluated, so
+            # a slow bootstrap cannot be mistaken for a hang and restarted.
+            failureThreshold: 60
+
+          readinessProbe:
+            exec:
+              command:
+                ["pg_isready", "-h", "127.0.0.1", "-p", "5432",
+                 "-U", "casetally", "-d", "casetally_law"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          livenessProbe:
+            exec:
+              command:
+                ["pg_isready", "-h", "127.0.0.1", "-p", "5432",
+                 "-U", "casetally", "-d", "casetally_law"]
+            periodSeconds: 20
+            timeoutSeconds: 5
+            # Deliberately slacker than readiness. Readiness failing pulls the
+            # pod out of the Service (recoverable); liveness failing DELETES
+            # the database process. Under a heavy bulk load the server can be
+            # briefly unresponsive, and restarting it then would be the worst
+            # possible response. 6 x 20s = 2 minutes of sustained failure.
+            failureThreshold: 6
+
+          resources:
+            # Requests are what the scheduler reserves; limits are the ceiling.
+            # Docker Desktop's VM has 7.75Gi total and must later also hold two
+            # copies of MiniLM (API + worker), so Postgres is capped at 2Gi
+            # rather than left unbounded.
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+
+      volumes:
+        - name: init-sql
+          configMap:
+            name: casetally-postgres-init
+
+        # tmpfs for /dev/shm. medium: Memory means RAM-backed, and the bytes
+        # written count against this container's 2Gi memory limit, so sizeLimit
+        # is a real cap rather than decoration. 512Mi is 8x the container
+        # default and still leaves well over 1Gi of headroom.
+        #
+        # Chosen over "SET max_parallel_maintenance_workers = 0" for the index
+        # build because that only fixes the one CREATE INDEX and leaves the
+        # 64MB limit in place for everything after it. Hybrid search runs
+        # parallel scans over 83,706 rows at query time and hits the same
+        # shared memory, so the workaround would defer the problem into the
+        # serving path instead of removing it.
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: postgres
+          app.kubernetes.io/part-of: casetally
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # kind's built-in default class, backed by rancher.io/local-path.
+        storageClassName: standard
+        resources:
+          requests:
+            # Measured, not guessed: the live compose PGDATA is 1.5G total,
+            # 713M of actual data+indexes and 864M of accumulated WAL. 8Gi
+            # leaves room for the WAL spike during bulk restore, the HNSW
+            # index rebuild, and corpus growth.
+            #
+            # Caveat worth knowing: local-path does NOT enforce capacity. On
+            # kind this number is documentation; on a real CSI driver it would
+            # be a hard limit.
+            storage: 8Gi

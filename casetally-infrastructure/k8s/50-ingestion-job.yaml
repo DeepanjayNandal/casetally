@@ -1,0 +1,177 @@
+# One-shot US Code ingestion.
+#
+# A Job, not a Deployment, because the process runs to completion and exits.
+# There is no server, nothing calls it, and restarting it forever would be
+# actively wrong.
+#
+# parallelism MUST stay 1, and this is the single most important line in the
+# file. finalize_deactivation in core/base_ingestor.py retires every chunk
+# absent from THIS process's accumulated _active_clause_ids. Two concurrent
+# processes would each retire the chunks the other had just written, silently
+# destroying corpus content. An earlier version of exactly that bug reduced a
+# 31-chunk section to 1 live chunk and 30 dead ones.
+#
+# Kubernetes cannot actually guarantee single-run here, which is why the
+# application also takes a Postgres advisory lock: parallelism 1 constrains this
+# Job object, but nothing stops a second `kubectl create job` or someone running
+# cli.py by hand. See the podFailurePolicy below.
+#
+# Re-run it with:
+#   kubectl create job --from=cronjob/... is not applicable; use
+#   kubectl delete job casetally-ingestion -n casetally --ignore-not-found
+#   kubectl apply -f 50-ingestion-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: casetally-ingestion
+  namespace: casetally
+  labels:
+    app.kubernetes.io/name: ingestion
+    app.kubernetes.io/component: batch
+    app.kubernetes.io/part-of: casetally
+spec:
+  parallelism: 1
+  completions: 1
+
+  # Retry a genuinely failed run twice. Transient causes are plausible: a
+  # dropped database connection, or the pod being evicted under memory
+  # pressure. Set low because ingestion is idempotent but not free; a full pass
+  # parses 433MB of HTML.
+  backoffLimit: 2
+
+  # Hard ceiling on the whole Job, counted from creation and independent of
+  # backoffLimit. A full idempotent re-run parses all 53 titles even though it
+  # writes nothing, so the budget has to cover real parsing work, not just the
+  # happy no-op case. One hour is generous for a run measured in minutes.
+  activeDeadlineSeconds: 3600
+
+  # Keep the finished pod so its logs can still be read. Without a TTL the pod
+  # object lingers indefinitely; without enough TTL it vanishes before anyone
+  # looks. One hour is long enough to inspect a run and short enough that
+  # repeated runs do not accumulate.
+  ttlSecondsAfterFinished: 3600
+
+  # Do not create a replacement pod while the previous one is still terminating.
+  #
+  # The default (TerminatingOrFailed) can start pod 2 while pod 1 is still
+  # shutting down, which for this workload means two processes briefly holding
+  # database sessions at once. The advisory lock would make the overlap safe
+  # rather than corrupting, but the second pod would then exit 75 and the
+  # podFailurePolicy would fail the whole Job over a self-inflicted race. Waiting
+  # for full termination avoids creating the race at all.
+  podReplacementPolicy: Failed
+
+  # Exit code 75 means "another run already holds the advisory lock". That is a
+  # correct, deliberate refusal, not a transient error, so retrying it would
+  # just burn backoffLimit attempts that are all guaranteed to lose the same
+  # race. FailJob ends the Job immediately and makes the cause visible in the
+  # Job status instead of hiding it behind retries.
+  podFailurePolicy:
+    rules:
+      - action: FailJob
+        onExitCodes:
+          containerName: ingestion
+          operator: In
+          values: [75]
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ingestion
+        app.kubernetes.io/component: batch
+        app.kubernetes.io/part-of: casetally
+    spec:
+      # Never, not OnFailure. With OnFailure the kubelet restarts the container
+      # in place, which keeps the same pod and makes podFailurePolicy unable to
+      # see the exit code it needs to match on.
+      restartPolicy: Never
+
+      # Ingestion accumulates per-citation state for the whole run, so a SIGTERM
+      # mid-run cannot be made to finish cleanly the way a worker batch can.
+      # 30s is enough to roll back and release the advisory lock.
+      terminationGracePeriodSeconds: 30
+
+      containers:
+        - name: ingestion
+          image: casetally-ingestion:0.3.0
+          imagePullPolicy: IfNotPresent
+
+          # The image CMD is overridden only to add -u. Without unbuffered
+          # output, Python buffers stdout when it is a pipe rather than a tty, so
+          # `kubectl logs -f` shows nothing until the buffer flushes and a long
+          # run looks hung.
+          command: ["python", "-u", "cli.py", "--source", "uscode"]
+
+          env:
+            # ---- ORDER MATTERS: $(VAR) only expands earlier entries --------
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: casetally-config
+                  key: POSTGRES_USER
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: casetally-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: casetally-secrets
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@casetally-postgres:5432/$(POSTGRES_DB)"
+            # ---------------------------------------------------------------
+
+            # Parsing is single-threaded Python, but lxml and any numeric
+            # dependency pick up the host core count the same way torch did in
+            # the worker. Pin it so a cpu-limited pod does not spend its quota
+            # on context switching.
+            - name: OMP_NUM_THREADS
+              value: "1"
+
+          envFrom:
+            - configMapRef:
+                name: casetally-config
+
+          volumeMounts:
+            # Source data: 53 HTML files (433MB) and 49 PDFs, the same directory
+            # for both. Read-only, because ingestion only ever reads it, and the
+            # kind extraMount is read-only as well. Nothing in CaseTally should
+            # be able to modify the only copy of the source corpus.
+            - name: source-data
+              mountPath: /data/uscode
+              readOnly: true
+
+            # cli.py's configure_logging adds a FileHandler at
+            # /app/logs/ingestion.log, falling back to console if it cannot be
+            # created. An emptyDir makes the file path work without the fallback
+            # firing; stdout already carries everything via StreamHandler, which
+            # is what `kubectl logs` reads.
+            - name: logs
+              mountPath: /app/logs
+
+          resources:
+            # Ingestion holds significant per-process state: accumulated
+            # clause ids and chunk offsets for every citation in the run. Sized
+            # with room for that rather than trimmed to a measurement, because
+            # being OOM killed mid-run is far worse than reserving slack.
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+      volumes:
+        - name: source-data
+          hostPath:
+            path: /data/uscode
+            type: Directory
+        - name: logs
+          emptyDir: {}

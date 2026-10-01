@@ -1,0 +1,227 @@
+# CaseTally API: FastAPI on uvicorn.
+#
+# Deployment rather than StatefulSet: the pods are stateless. The only thing
+# each holds is its own copy of the MiniLM model, which is read-only and
+# identical everywhere, so any replica can serve any request and a pod can be
+# replaced without anything to preserve.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: casetally-api
+  namespace: casetally
+  labels:
+    app.kubernetes.io/name: api
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: casetally
+spec:
+  replicas: 2
+
+  # maxUnavailable 0 means the old pod is not removed until a new one is
+  # serving, so capacity never dips below the declared replica count during a
+  # rollout. maxSurge 1 caps the extra cost at one additional pod, which
+  # matters here because each pod holds its own model copy and the Docker VM
+  # has 7.75GiB total.
+  #
+  # The pairing is what makes a rollout safe AND bounded: zero-downtime without
+  # briefly doubling memory usage.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api
+      app.kubernetes.io/part-of: casetally
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api
+        app.kubernetes.io/component: backend
+        app.kubernetes.io/part-of: casetally
+    spec:
+      # Covers the preStop sleep plus uvicorn's graceful drain, with margin:
+      # 5s preStop + 40s drain = 45s, inside a 60s budget.
+      terminationGracePeriodSeconds: 60
+
+      # Spread replicas across nodes when there is more than one. On this
+      # single-node cluster it is a no-op, which is why it is ScheduleAnyway
+      # rather than DoNotSchedule: a hard constraint would leave the second
+      # replica permanently Pending.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: api
+              app.kubernetes.io/part-of: casetally
+
+      containers:
+        - name: api
+          # Locally built, so there is no registry digest to pin. An explicit
+          # version tag is the strongest available guarantee; it is never
+          # :latest. Loaded into the node with `kind load`, see the README.
+          image: casetally-backend:0.2.0
+          imagePullPolicy: IfNotPresent
+
+          # The image CMD is overridden only to add the graceful shutdown
+          # bound. Without it uvicorn waits indefinitely for in-flight requests,
+          # and /v1/chat/stream is an SSE response that can stay open for a long
+          # time, so a single slow client could outlast the grace period and
+          # earn the pod a SIGKILL. 40s sits comfortably inside the 60s budget.
+          command: ["uvicorn"]
+          args:
+            - "app.main:app"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "3001"
+            - "--timeout-graceful-shutdown"
+            - "40"
+
+          ports:
+            - name: http
+              containerPort: 3001
+              protocol: TCP
+
+          env:
+            # ---- ORDER MATTERS BELOW THIS LINE ----------------------------
+            # Kubernetes expands $(VAR) using variables defined EARLIER in this
+            # same list. POSTGRES_USER, POSTGRES_DB and POSTGRES_PASSWORD must
+            # therefore all appear before DATABASE_URL. Move DATABASE_URL up
+            # and it is injected as the literal string "$(POSTGRES_USER)".
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: casetally-config
+                  key: POSTGRES_USER
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: casetally-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: casetally-secrets
+                  key: POSTGRES_PASSWORD
+
+            # Assembled here rather than stored in the Secret, so the password
+            # has exactly one source of truth and the two cannot drift. Only
+            # the password comes from the Secret; host, port and database name
+            # are not sensitive and are visible in the spec, which is the
+            # correct split.
+            #
+            # Caveat: this is plain string substitution, so a password
+            # containing URI-reserved characters (@ : / ?) would corrupt the
+            # URL. The current one was checked and needs no percent-encoding.
+            - name: DATABASE_URL
+              value: "postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@casetally-postgres:5432/$(POSTGRES_DB)"
+            # ---- ORDER NO LONGER MATTERS ----------------------------------
+
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: casetally-secrets
+                  key: GROQ_API_KEY
+
+            # HF_HUB_OFFLINE now comes from the shared ConfigMap via envFrom
+            # below, since the worker image bakes the model in too.
+
+          envFrom:
+            - configMapRef:
+                name: casetally-config
+
+          volumeMounts:
+            # Source PDFs. The API serves these with FileResponse on the
+            # absolute path held in artifact_metadata, which restore-db.sh
+            # rewrites to /data/uscode. Read-only here and read-only again at
+            # the kind mount: nothing in CaseTally writes to the archive.
+            - name: pdfs
+              mountPath: /data/uscode
+              readOnly: true
+
+          lifecycle:
+            preStop:
+              # Pod deletion does two things concurrently: kubelet sends
+              # SIGTERM, and the endpoints controller removes this pod from the
+              # Service. Nothing orders them. Without this pause uvicorn can
+              # begin shutting down while the Service still lists it, and
+              # requests routed in that window are refused.
+              #
+              # Sleeping first lets endpoint removal propagate, so SIGTERM
+              # arrives only after traffic has already stopped being sent here.
+              exec:
+                command: ["sleep", "5"]
+
+          # Uvicorn does not bind its socket until the lifespan handler
+          # finishes, and that handler loads MiniLM. So until the model is
+          # resident this probe gets connection-refused, which is precisely the
+          # signal we want: the pod cannot join Service endpoints while cold.
+          #
+          # 60 x 2s = 120s. Measured startup is far below that; the headroom is
+          # for a cold page cache or a loaded machine.
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 60
+
+          # Readiness checks the database, because a pod that cannot reach
+          # Postgres cannot answer a search and should be taken out of
+          # rotation.
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # Liveness deliberately uses /health/live, which is a static response
+          # that touches nothing. If liveness checked the database, a brief
+          # Postgres outage would fail it on every replica at once and
+          # Kubernetes would restart the entire API tier, turning a recoverable
+          # dependency blip into a self-inflicted outage. Readiness is the
+          # correct place to react to a sick dependency; liveness should only
+          # ask whether this process is still functioning.
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          resources:
+            # Measured, not estimated. With the model warm and after serving
+            # real searches, an SSE stream and a 1.2MB PDF, cgroup
+            # memory.current sat at 366-417 MiB and memory.peak at 423 MiB.
+            #
+            # requests 512Mi is just above observed peak, so the scheduler
+            # reserves what a pod actually needs rather than a guess.
+            # limits 1Gi is roughly 2.4x peak, leaving room for concurrent SSE
+            # streams without being so generous that two replicas plus the
+            # worker tier can overcommit the 7.75GiB Docker VM.
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+      volumes:
+        - name: pdfs
+          hostPath:
+            path: /data/uscode
+            type: Directory

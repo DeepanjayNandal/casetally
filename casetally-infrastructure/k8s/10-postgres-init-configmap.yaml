@@ -1,0 +1,200 @@
+# GENERATED FILE. Do not hand-edit. Regenerate after any change to
+# casetally-db/init.sql:
+#
+#   kubectl create configmap casetally-postgres-init \
+#     --namespace casetally \
+#     --from-file=init.sql=casetally-db/init.sql \
+#     --dry-run=client -o yaml \
+#     > casetally-infrastructure/k8s/10-postgres-init-configmap.yaml
+#   # then re-add this header
+#
+# Why a ConfigMap at all: the compose stack gets its schema from a CUSTOM
+# image (casetally-db/Dockerfile COPYs init.sql into
+# /docker-entrypoint-initdb.d/). That image is built FROM ankane/pgvector,
+# which is retired and frozen at PostgreSQL 15.4 / pgvector 0.5.1. Moving the
+# schema into a ConfigMap lets the cluster run the stock, maintained
+# pgvector/pgvector:pg16 image with no custom build step. The schema becomes
+# data mounted into a standard image rather than a layer baked into a bespoke
+# one. It is also the only copy, so it cannot drift from what compose used.
+#
+# Generating rather than transcribing matters: init.sql is 358 lines, and a
+# hand-maintained YAML copy would silently diverge the first time the schema
+# changed.
+#
+# Size note: ConfigMaps cap at 1 MiB. init.sql is 14,585 bytes, which is 1.4% of the
+# limit, so this approach does not have a cliff ahead of it.
+#
+# Runs ONLY when PGDATA is empty (that is how docker-entrypoint.sh works), so
+# it bootstraps a fresh PVC and is inert on every subsequent restart.
+apiVersion: v1
+data:
+  init.sql: "-- =============================================================================\n--
+    CaseTally - Citation-Centric Schema\n-- Version: 2.0 (Migration from document-centric
+    to citation-centric)\n-- =============================================================================\n\n--
+    Enable required extensions\nCREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";\nCREATE
+    EXTENSION IF NOT EXISTS \"vector\";\n\n-- =============================================================================\n--
+    TABLE 1: users (UNCHANGED)\n-- =============================================================================\nCREATE
+    TABLE IF NOT EXISTS users (\n    id SERIAL PRIMARY KEY,\n    username VARCHAR(100)
+    UNIQUE NOT NULL,\n    email VARCHAR(255) UNIQUE NOT NULL,\n    full_name VARCHAR(200),\n
+    \   role VARCHAR(50) DEFAULT 'user',\n    is_active BOOLEAN DEFAULT TRUE,\n    created_at
+    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n);\n\n--
+    =============================================================================\n--
+    TABLE 2: legal_chunks (REPLACES legal_documents + document_chunks)\n-- Citation-indexed
+    search chunks with hybrid search support\n-- =============================================================================\nCREATE
+    TABLE IF NOT EXISTS legal_chunks (\n    id SERIAL PRIMARY KEY,\n    \n    -- Citation
+    is the primary searchable key\n    citation VARCHAR(200) NOT NULL,\n    clause_id
+    VARCHAR(250) UNIQUE NOT NULL,\n    \n    -- Content\n    text_content TEXT NOT
+    NULL,\n    \n    -- Hybrid search: Vector (semantic) + full-text (keyword)\n    embedding
+    VECTOR(384),              -- Sentence transformer embeddings\n    search_vector
+    tsvector,              -- Auto-generated for full-text search\n    \n    -- Metadata\n
+    \   jurisdiction VARCHAR(100) DEFAULT 'Federal',\n    document_type VARCHAR(50),
+    \          -- 'US Code', 'State Code', 'Case Law'\n    chunk_type VARCHAR(50),
+    \             -- 'section', 'clause', 'paragraph'\n    tags TEXT[],                         --
+    Fast array-based tags\n    \n    -- Version control (critical for legal accuracy)\n
+    \   version_hash VARCHAR(64) NOT NULL,   -- SHA256 of source\n    is_current BOOLEAN
+    DEFAULT TRUE,     -- Handle statute updates\n    effective_date DATE,                 --
+    When law took effect\n\n    -- Embedding failure tracking: the worker's queue
+    is \"embedding IS NULL\",\n    -- so a chunk that always fails to encode would
+    be retried forever and\n    -- starve everything behind it. Rows at or above the
+    retry cap are skipped.\n    retry_count INTEGER NOT NULL DEFAULT 0,\n    \n    --
+    Timestamps\n    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n    updated_at
+    TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n);\n\n-- =============================================================================\n--
+    TABLE 3: legal_artifacts (NEW)\n-- Display layer: PDF pages, HTML links, API endpoints\n--
+    =============================================================================\nCREATE
+    TABLE IF NOT EXISTS legal_artifacts (\n    id SERIAL PRIMARY KEY,\n    \n    --
+    Links to legal_chunks\n    citation VARCHAR(200) NOT NULL,\n    \n    -- Flexible
+    artifact storage\n    artifact_type VARCHAR(50) NOT NULL,  -- 'pdf', 'html', 'xml',
+    'api'\n    artifact_metadata JSONB NOT NULL,\n    -- Examples:\n    -- PDF:  {\"file_path\":
+    \"/data/title1.pdf\", \"page\": 2}\n    -- HTML: {\"url\": \"https://...\", \"section_id\":
+    \"#section-1\"}\n    -- API:  {\"endpoint\": \"https://...\", \"opinion_id\":
+    12345}\n    \n    -- Version control (must match legal_chunks.version_hash)\n
+    \   version_hash VARCHAR(64) NOT NULL,\n    is_primary BOOLEAN DEFAULT TRUE,     --
+    Which artifact to show first\n    \n    -- Timestamp\n    created_at TIMESTAMP
+    DEFAULT CURRENT_TIMESTAMP,\n    \n    -- Constraints\n    CONSTRAINT unique_citation_artifact
+    UNIQUE (citation, artifact_type, version_hash)\n);\n\n-- =============================================================================\n--
+    TABLE 4: search_queries (UNCHANGED)\n-- =============================================================================\nCREATE
+    TABLE IF NOT EXISTS search_queries (\n    id SERIAL PRIMARY KEY,\n    user_id
+    INTEGER REFERENCES users(id),\n    query_text TEXT NOT NULL,\n    search_type
+    VARCHAR(50),             -- 'vector', 'bm25', 'hybrid'\n    results_count INTEGER,\n
+    \   execution_time_ms INTEGER,\n    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n
+    \   filters JSONB\n);\n\n-- =============================================================================\n--
+    TABLE 5: notifications (UNCHANGED)\n-- =============================================================================\nCREATE
+    TABLE IF NOT EXISTS notifications (\n    id SERIAL PRIMARY KEY,\n    user_id INTEGER
+    REFERENCES users(id),\n    title VARCHAR(200) NOT NULL,\n    message TEXT,\n    notification_type
+    VARCHAR(50),\n    is_read BOOLEAN DEFAULT FALSE,\n    created_at TIMESTAMP DEFAULT
+    CURRENT_TIMESTAMP,\n    notification_metadata JSONB\n);\n\n-- =============================================================================\n--
+    TABLE 6: ingestion_runs (NEW)\n-- Track scraper execution and changes\n-- =============================================================================\nCREATE
+    TABLE IF NOT EXISTS ingestion_runs (\n    id SERIAL PRIMARY KEY,\n    source_type
+    VARCHAR(50) NOT NULL,    -- 'uscode', 'arizona', 'texas'\n    jurisdiction VARCHAR(100),\n
+    \   run_started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n    run_completed_at
+    TIMESTAMP,\n    status VARCHAR(20),                  -- 'running', 'success',
+    'failed'\n    last_hash VARCHAR(64),               -- Detect if source changed\n
+    \   chunks_added INTEGER DEFAULT 0,\n    chunks_updated INTEGER DEFAULT 0,\n    artifacts_added
+    INTEGER DEFAULT 0,\n    error_message TEXT\n);\n\n-- =============================================================================\n--
+    INDEXES: Performance optimization\n-- =============================================================================\n\n--
+    legal_chunks indexes\nCREATE INDEX IF NOT EXISTS idx_chunks_citation ON legal_chunks(citation);\nCREATE
+    INDEX IF NOT EXISTS idx_chunks_clause_id ON legal_chunks(clause_id);\nCREATE INDEX
+    IF NOT EXISTS idx_chunks_embedding ON legal_chunks\n    USING hnsw (embedding
+    vector_cosine_ops)\n    WITH (m = 16, ef_construction = 64);\nCREATE INDEX IF
+    NOT EXISTS idx_chunks_search_vector ON legal_chunks \n    USING gin(search_vector);\nCREATE
+    INDEX IF NOT EXISTS idx_chunks_tags ON legal_chunks \n    USING gin(tags);\nCREATE
+    INDEX IF NOT EXISTS idx_chunks_jurisdiction ON legal_chunks(jurisdiction);\nCREATE
+    INDEX IF NOT EXISTS idx_chunks_document_type ON legal_chunks(document_type);\nCREATE
+    INDEX IF NOT EXISTS idx_chunks_current ON legal_chunks(is_current) \n    WHERE
+    is_current = TRUE;\nCREATE INDEX IF NOT EXISTS idx_chunks_version ON legal_chunks(version_hash);\n\n--
+    legal_artifacts indexes\nCREATE INDEX IF NOT EXISTS idx_artifacts_citation ON
+    legal_artifacts(citation);\nCREATE INDEX IF NOT EXISTS idx_artifacts_type ON legal_artifacts(artifact_type);\nCREATE
+    INDEX IF NOT EXISTS idx_artifacts_primary ON legal_artifacts(is_primary) \n    WHERE
+    is_primary = TRUE;\nCREATE INDEX IF NOT EXISTS idx_artifacts_version ON legal_artifacts(version_hash);\n\n--
+    Other tables\nCREATE INDEX IF NOT EXISTS idx_search_queries_user_id ON search_queries(user_id);\nCREATE
+    INDEX IF NOT EXISTS idx_search_queries_created_at ON search_queries(created_at);\nCREATE
+    INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);\nCREATE
+    INDEX IF NOT EXISTS idx_notifications_is_read ON notifications(is_read);\nCREATE
+    INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at);\nCREATE
+    INDEX IF NOT EXISTS idx_ingestion_source ON ingestion_runs(source_type);\nCREATE
+    INDEX IF NOT EXISTS idx_ingestion_started ON ingestion_runs(run_started_at);\n\n--
+    =============================================================================\n--
+    TRIGGERS: Auto-update computed columns\n-- =============================================================================\n\n--
+    Auto-update search_vector from text_content\nCREATE OR REPLACE FUNCTION update_search_vector()\nRETURNS
+    TRIGGER AS $$\nBEGIN\n    NEW.search_vector = to_tsvector('english', NEW.text_content);\n
+    \   RETURN NEW;\nEND;\n$$ LANGUAGE plpgsql;\n\nCREATE TRIGGER trigger_chunks_search_vector\n
+    \   BEFORE INSERT OR UPDATE OF text_content\n    ON legal_chunks\n    FOR EACH
+    ROW\n    EXECUTE FUNCTION update_search_vector();\n\n-- Auto-update updated_at
+    timestamp\nCREATE OR REPLACE FUNCTION update_updated_at()\nRETURNS TRIGGER AS
+    $$\nBEGIN\n    NEW.updated_at = CURRENT_TIMESTAMP;\n    RETURN NEW;\nEND;\n$$
+    LANGUAGE plpgsql;\n\nCREATE TRIGGER trigger_users_updated_at\n    BEFORE UPDATE
+    ON users \n    FOR EACH ROW \n    EXECUTE FUNCTION update_updated_at();\n\nCREATE
+    TRIGGER trigger_chunks_updated_at\n    BEFORE UPDATE ON legal_chunks \n    FOR
+    EACH ROW \n    EXECUTE FUNCTION update_updated_at();\n\n-- =============================================================================\n--
+    VIEWS: Common query patterns\n-- =============================================================================\n\n--
+    Unified search results view (joins chunks with artifacts)\nCREATE OR REPLACE VIEW
+    legal_search_results AS\nSELECT \n    c.id,\n    c.citation,\n    c.clause_id,\n
+    \   c.text_content,\n    c.chunk_type,\n    c.jurisdiction,\n    c.document_type,\n
+    \   c.tags,\n    c.effective_date,\n    c.version_hash,\n    c.is_current,\n    c.created_at,\n
+    \   \n    -- Aggregate all artifacts as JSONB\n    jsonb_object_agg(\n        a.artifact_type,
+    \n        a.artifact_metadata\n    ) FILTER (WHERE a.id IS NOT NULL) as artifacts\n
+    \   \nFROM legal_chunks c\nLEFT JOIN legal_artifacts a \n    ON c.citation = a.citation
+    \n    AND c.version_hash = a.version_hash\nWHERE c.is_current = TRUE\nGROUP BY
+    c.id, c.citation, c.clause_id, c.text_content, c.chunk_type, \n         c.jurisdiction,
+    c.document_type, c.tags, c.effective_date, \n         c.version_hash, c.is_current,
+    c.created_at;\n\n-- Current citations summary (deduplicated)\nCREATE OR REPLACE
+    VIEW current_citations AS\nSELECT DISTINCT ON (citation)\n    citation,\n    jurisdiction,\n
+    \   document_type,\n    effective_date,\n    tags,\n    COUNT(*) OVER (PARTITION
+    BY citation) as clause_count\nFROM legal_chunks\nWHERE is_current = TRUE\nORDER
+    BY citation, effective_date DESC NULLS LAST;\n\n-- =============================================================================\n--
+    HELPER FUNCTIONS\n-- =============================================================================\n\n--
+    Get PDF page for a citation\nCREATE OR REPLACE FUNCTION get_pdf_page(citation_text
+    VARCHAR)\nRETURNS INTEGER AS $$\nDECLARE\n    page_num INTEGER;\nBEGIN\n    SELECT
+    (artifact_metadata->>'page')::INTEGER INTO page_num\n    FROM legal_artifacts\n
+    \   WHERE citation = citation_text\n      AND artifact_type = 'pdf'\n      AND
+    is_primary = TRUE\n    LIMIT 1;\n    \n    RETURN page_num;\nEND;\n$$ LANGUAGE
+    plpgsql;\n\n-- Check version consistency\nCREATE OR REPLACE FUNCTION check_version_consistency()\nRETURNS
+    TABLE (\n    citation VARCHAR,\n    atom_hash VARCHAR,\n    artifact_hash VARCHAR,\n
+    \   status TEXT\n) AS $$\nBEGIN\n    RETURN QUERY\n    SELECT \n        c.citation,\n
+    \       c.version_hash as atom_hash,\n        a.version_hash as artifact_hash,\n
+    \       CASE \n            WHEN c.version_hash = a.version_hash THEN 'OK'\n            WHEN
+    a.version_hash IS NULL THEN 'MISSING_ARTIFACT'\n            ELSE 'VERSION_MISMATCH'\n
+    \       END as status\n    FROM legal_chunks c\n    LEFT JOIN legal_artifacts
+    a ON c.citation = a.citation\n    WHERE c.is_current = TRUE;\nEND;\n$$ LANGUAGE
+    plpgsql;\n\n-- =============================================================================\n--
+    SEED DATA\n-- =============================================================================\n\n--
+    Insert default admin user\nINSERT INTO users (username, email, full_name, role,
+    is_active)\nVALUES ('admin', 'admin@casetally.com', 'System Administrator', 'admin',
+    TRUE)\nON CONFLICT (username) DO NOTHING;\n\n-- =============================================================================\n--
+    COMMENTS: Documentation\n-- =============================================================================\n\nCOMMENT
+    ON TABLE users IS 'User accounts for the law library system';\nCOMMENT ON TABLE
+    legal_chunks IS 'Citation-indexed chunks for hybrid search (full-text + vector)
+    and LLM context';\nCOMMENT ON TABLE legal_artifacts IS 'Display metadata (PDF
+    pages, HTML links, etc.) for citations';\nCOMMENT ON TABLE search_queries IS 'Log
+    of user search queries for analytics';\nCOMMENT ON TABLE notifications IS 'User
+    notifications and alerts';\nCOMMENT ON TABLE ingestion_runs IS 'Track scraper
+    execution and version changes';\n\nCOMMENT ON COLUMN legal_chunks.citation IS
+    'Primary legal citation (e.g., \"1 U.S.C. § 1\")';\nCOMMENT ON COLUMN legal_chunks.clause_id
+    IS 'Unique clause identifier (e.g., \"1 U.S.C. § 1, cl. 2\")';\nCOMMENT ON COLUMN
+    legal_chunks.embedding IS 'Vector embedding for semantic search (sentence-transformers/all-MiniLM-L6-v2,
+    384 dimensions)';\nCOMMENT ON COLUMN legal_chunks.search_vector IS 'Auto-generated
+    tsvector for PostgreSQL full-text search, ranked with ts_rank_cd';\nCOMMENT ON
+    COLUMN legal_chunks.tags IS 'Deterministic tags extracted from citation structure';\nCOMMENT
+    ON COLUMN legal_chunks.version_hash IS 'SHA256 hash of source document for version
+    control';\nCOMMENT ON COLUMN legal_chunks.is_current IS 'TRUE for current version,
+    FALSE for historical versions';\n\nCOMMENT ON COLUMN legal_artifacts.artifact_type
+    IS 'Type of display artifact: pdf, html, xml, api';\nCOMMENT ON COLUMN legal_artifacts.artifact_metadata
+    IS 'Type-specific data (file_path, page, url, etc.)';\nCOMMENT ON COLUMN legal_artifacts.version_hash
+    IS 'MUST match legal_chunks.version_hash to ensure consistency';\n\nCOMMENT ON
+    VIEW legal_search_results IS 'Unified search results joining chunks with all their
+    artifacts';\nCOMMENT ON VIEW current_citations IS 'Deduplicated list of current
+    citations with summary stats';\n\n-- =============================================================================\n--
+    MIGRATION NOTES\n-- =============================================================================\n\n--
+    This schema replaces:\n--   - legal_documents (removed - citation is now the primary
+    key)\n--   - document_chunks (replaced by legal_chunks with citation indexing)\n--\n--
+    Key improvements:\n--   1. Citation-centric design (not document-centric)\n--
+    \  2. Hybrid search (full-text + vector, not just vector)\n--   3. Version control
+    (prevents search/PDF drift)\n--   4. Flexible artifacts (supports PDF, HTML, XML,
+    API)\n--   5. Multi-source ready (US Code, state codes, case law)\n--\n-- Breaking
+    changes:\n--   - All existing data must be re-ingested\n--   - Old API endpoints
+    need to query legal_chunks, not document_chunks\n--   - Search now returns citations,
+    not document IDs"
+kind: ConfigMap
+metadata:
+  name: casetally-postgres-init
+  namespace: casetally

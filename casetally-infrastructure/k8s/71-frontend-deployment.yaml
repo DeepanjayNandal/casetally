@@ -1,0 +1,133 @@
+# Next.js frontend, standalone server.
+#
+# Stateless: it serves a prebuilt bundle and holds nothing per user, so replicas
+# are interchangeable and a pod can be replaced with nothing to preserve.
+#
+# There is no DATABASE_URL and no GROQ_API_KEY here, and that is worth noticing.
+# Every backend call in this app is made from the BROWSER: all three call sites
+# are in "use client" components, and the app has no API routes, no route.ts
+# handlers, no getServerSideProps and no server actions. So this pod never talks
+# to Postgres, Groq, or even the API. It serves JavaScript. Giving it credentials
+# would be granting access it has no use for.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: casetally-frontend
+  namespace: casetally
+  labels:
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: casetally
+spec:
+  replicas: 2
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+      app.kubernetes.io/part-of: casetally
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: frontend
+        app.kubernetes.io/component: web
+        app.kubernetes.io/part-of: casetally
+    spec:
+      terminationGracePeriodSeconds: 30
+
+      containers:
+        - name: frontend
+          # Built with an EMPTY NEXT_PUBLIC_BACKEND_URL, which the app reads with
+          # ?? rather than ||, so the bundle issues relative requests
+          # ("/v1/search") and is same-origin on whatever host serves it. Unlike
+          # 0.3.0, which had http://localhost compiled in, this image needs no
+          # rebuild to move behind a different ingress hostname.
+          image: casetally-frontend:0.4.0
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3000"
+            # Next's standalone server binds localhost unless told otherwise,
+            # which inside a pod makes it unreachable from anything, including
+            # the kubelet running the probes below.
+            - name: HOSTNAME
+              value: "0.0.0.0"
+
+          # Probing / rather than a dedicated health route, because this app has
+          # none and adding one would be an application change for no benefit.
+          # A 200 on the home page means the server is rendering, which is the
+          # only thing this pod does.
+          #
+          # Readiness and liveness are the same check here on purpose. For a
+          # stateless static server with no dependencies there is no state where
+          # it should be removed from the Service but not restarted: it either
+          # serves pages or it does not.
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 5
+            failureThreshold: 45
+
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          lifecycle:
+            preStop:
+              # Same reasoning as the API: pod deletion removes the pod from
+              # Service endpoints and sends SIGTERM concurrently, with no
+              # ordering. Pausing first lets endpoint removal land, so Traefik
+              # stops routing here before the server starts shutting down.
+              exec:
+                command: ["sleep", "5"]
+
+          resources:
+            # Measured, not estimated: cgroup memory.peak was 38-39 MiB per
+            # replica while serving the home page and all 15 static assets.
+            # A prebuilt Next.js standalone server holds almost nothing.
+            #
+            # 192Mi is roughly 5x the observed peak, which is deliberate slack
+            # rather than tightness, and still small enough that two replicas
+            # cost less than a quarter of what one worker does.
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

@@ -1,0 +1,23 @@
+# ClusterIP Service for the Next.js frontend.
+#
+# Only Traefik talks to this; nothing reaches it from outside the cluster
+# directly. The Ingress sends everything that is not /v1 or /health here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: casetally-frontend
+  namespace: casetally
+  labels:
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: casetally
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/part-of: casetally
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      protocol: TCP

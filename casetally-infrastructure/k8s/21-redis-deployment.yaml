@@ -1,0 +1,137 @@
+# Redis, single replica, no persistence.
+#
+# Deployment rather than StatefulSet, unlike Postgres. Everything Redis holds
+# here is derived state that the system rebuilds on its own:
+#
+#   worker:embedding:{HOSTNAME}:state      IDLE / PROCESSING, 300s TTL
+#   worker:embedding:{HOSTNAME}:heartbeat  30s TTL, refreshed every 10s
+#   worker:embedding:{HOSTNAME}:metrics    300s TTL
+#
+# The embedding worker's actual queue is "legal_chunks WHERE embedding IS NULL"
+# in Postgres, not a Redis list. Losing Redis loses observability for one poll
+# interval, not work. Because there is no durable state, there is no PVC, no
+# stable pod identity to preserve, and no reason to pay for ordered rollout.
+#
+# No persistence is deliberate and enforced: the command below disables both
+# RDB snapshots and AOF. A disk-backed Redis here would create a file whose
+# contents outlive the thing that produced them, which is how you get a worker
+# reading a stale heartbeat from a previous cluster and drawing the wrong
+# conclusion about a pod that no longer exists.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: casetally-redis
+  namespace: casetally
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: casetally
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate. Two Redis pods briefly serving the same
+  # Service would split worker state across two independent key spaces, so an
+  # observer could see a worker as both IDLE and PROCESSING depending on which
+  # pod answered. A moment of downtime is the cheaper failure here.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+      app.kubernetes.io/part-of: casetally
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/component: cache
+        app.kubernetes.io/part-of: casetally
+    spec:
+      containers:
+        - name: redis
+          # Pinned by digest. This is Redis 7.4.11. The "7-alpine" tag moves
+          # with every patch release; the digest does not.
+          image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+          imagePullPolicy: IfNotPresent
+
+          # --save "" disables RDB snapshotting, --appendonly no disables AOF.
+          # Both are off by intent, not by accident, and saying so in the
+          # command means it cannot be re-enabled by a config file appearing in
+          # a future base image.
+          #
+          # maxmemory-policy noeviction is the right choice for this workload
+          # even though it sounds stricter than allkeys-lru. Every key the
+          # worker writes already carries its own TTL, so the keyspace is
+          # self-limiting. If it ever did hit the cap, that means something is
+          # leaking keys, and failing the write makes that visible immediately
+          # rather than silently evicting a live worker's heartbeat and making
+          # a healthy worker look dead.
+          args:
+            - redis-server
+            - --save
+            - ""
+            - --appendonly
+            - "no"
+            - --maxmemory
+            - "200mb"
+            - --maxmemory-policy
+            - "noeviction"
+
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+
+          # PING is a real round trip through the command path, not a TCP
+          # accept, so it fails while Redis is loading or blocked rather than
+          # reporting healthy because the socket happens to be open.
+          startupProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
+
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          resources:
+            # maxmemory is 200mb, so the 256Mi limit sits just above the point
+            # where Redis starts refusing writes. That ordering matters: Redis
+            # should hit its own limit and return an error first, rather than
+            # being OOM killed by the kubelet, which would take the whole pod
+            # down and tell you nothing about why.
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          # readOnlyRootFilesystem is safe precisely because persistence is
+          # off. Redis would otherwise need somewhere to write its dump file.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: tmp
+          emptyDir: {}

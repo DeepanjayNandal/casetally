@@ -1,0 +1,215 @@
+# Embedding worker.
+#
+# No Service, deliberately. The worker exposes no port and nothing ever calls
+# it. It pulls work from Postgres, so there is nothing to put a Service in front
+# of.
+#
+# No readiness probe either, and that is the right call rather than an omission.
+# Readiness exists to answer "should traffic be routed here", and with no
+# Service there is no traffic to route. The only other thing readiness affects
+# is rollout progression, and for a queue consumer "ready" and "alive" are the
+# same question: if the loop is running it is working. Adding a readiness probe
+# here would duplicate liveness while implying a routing decision that does not
+# exist.
+#
+# Scaling this tier is safe because of how the worker claims work:
+# _get_pending_chunks ends with FOR UPDATE SKIP LOCKED, so concurrent replicas
+# take disjoint batches rather than all grabbing the same lowest ids. The locks
+# are held from the SELECT until commit, so a replica that dies mid-batch rolls
+# back and its rows return to the queue as embedding IS NULL. No lease table and
+# no reaper are needed.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: casetally-worker
+  namespace: casetally
+  labels:
+    app.kubernetes.io/name: worker
+    app.kubernetes.io/component: embedding-worker
+    app.kubernetes.io/part-of: casetally
+spec:
+  # 2 by default, not 3, and this is a memory decision rather than a throughput
+  # one. Adding Traefik and the frontend pushed the namespace's declared limits
+  # past what the 7934Mi Docker VM can hold; dropping one worker gives back
+  # 900Mi, which is roughly what the ingress and frontend together need.
+  #
+  # The queue is "embedding IS NULL" in Postgres, so worker count only changes
+  # how fast a backlog drains, never whether the work happens. Scale up for a
+  # demo and back down afterwards:
+  #
+  #   kubectl scale deployment/casetally-worker -n casetally --replicas=3
+  #   kubectl scale deployment/casetally-worker -n casetally --replicas=2
+  #
+  # Raising the per-pod ceiling instead would have been the wrong fix: the pods
+  # were not short of memory, the node was.
+  replicas: 2
+
+  # RollingUpdate is safe here precisely because of SKIP LOCKED: a new and an
+  # old replica overlapping cannot process the same row. Contrast Redis, which
+  # uses Recreate because two instances would split state.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worker
+      app.kubernetes.io/part-of: casetally
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: worker
+        app.kubernetes.io/component: embedding-worker
+        app.kubernetes.io/part-of: casetally
+    spec:
+      # A batch of 100 chunks takes roughly 2 seconds, so 30 would do. 45 is
+      # set explicitly rather than left to the 30 second default because the
+      # slow path is not the normal one: on a batch failure the worker re-encodes
+      # row by row through _process_individually, which can take far longer than
+      # a clean batch. This is the number that decides whether a shutdown
+      # finishes its work or gets SIGKILLed, so it should be a decision rather
+      # than a default.
+      terminationGracePeriodSeconds: 45
+
+      containers:
+        - name: worker
+          image: casetally-worker:0.3.1
+          imagePullPolicy: IfNotPresent
+
+          env:
+            # Pin the math libraries to one thread each.
+            #
+            # torch sizes its thread pool from the HOST core count, not from the
+            # cgroup quota, so inside a cpu: 1 container it was starting 11
+            # threads to share 1 CPU of quota. Measured result: nr_throttled
+            # 1219 of nr_periods 1727, so 70% of scheduling periods were
+            # throttled, and three replicas managed only ~5.3 chunks/sec each
+            # against the ~50/sec a single unconstrained worker reaches.
+            #
+            # Threads above the quota do not add throughput, they add context
+            # switching and throttling. One thread per CPU of quota is the match.
+            # Set as env vars rather than torch.set_num_threads() because OpenMP
+            # and MKL read them at import time, before any Python call could
+            # take effect.
+            - name: OMP_NUM_THREADS
+              value: "1"
+            - name: MKL_NUM_THREADS
+              value: "1"
+
+            # ---- ORDER MATTERS: $(VAR) only expands earlier entries --------
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: casetally-config
+                  key: POSTGRES_USER
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: casetally-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: casetally-secrets
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@casetally-postgres:5432/$(POSTGRES_DB)"
+            # ---------------------------------------------------------------
+
+            # The worker writes its Redis keys under this name, and it is also
+            # the pod name, so observability keys are per replica with no
+            # coordination. The image defaults to a fixed string, which would
+            # make three replicas collide on one key set.
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
+          envFrom:
+            - configMapRef:
+                name: casetally-config
+
+          # Liveness checks a file the MAIN LOOP writes, not Redis.
+          #
+          # The obvious probe is `redis-cli EXISTS worker:embedding:$HOSTNAME:heartbeat`,
+          # and it is wrong twice over. First, Redis runs with a Recreate
+          # strategy, so when it restarts every replica's probe fails at the same
+          # moment and Kubernetes restarts the whole worker tier over an outage
+          # in a service the workers do not need in order to make progress.
+          # Second, it tests Redis as much as it tests the worker.
+          #
+          # The file is written from inside the main loop, so it goes stale
+          # exactly when the loop stops advancing, which is the condition
+          # liveness should catch. A background thread writing it would keep
+          # reporting healthy while the loop was wedged.
+          #
+          # 150 second threshold: a normal batch is ~2s, but the per-chunk retry
+          # path re-encodes up to 100 rows individually and legitimately takes
+          # much longer. The threshold has to exceed the slowest honest
+          # iteration, or the probe kills workers that are merely busy.
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - 'test -f /tmp/heartbeat && [ $(( $(date +%s) - $(stat -c %Y /tmp/heartbeat) )) -lt 150 ]'
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # Covers model load plus the first loop iteration, after which the
+          # file exists. Until this passes, liveness is not evaluated, so a slow
+          # start is never mistaken for a hang.
+          #
+          # Checks FRESHNESS, not just existence. Mere existence would be enough
+          # today, because /tmp is the container's writable layer and a restart
+          # recreates it, so no file can outlive the process that wrote it. But
+          # that is a property of this manifest having no /tmp volume, and
+          # mounting an emptyDir there later would silently turn this probe into
+          # one that passes on a marker left by a worker that already died. The
+          # worker also unlinks the file at boot, so this is the second of two
+          # independent guards.
+          startupProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - 'test -f /tmp/heartbeat && [ $(( $(date +%s) - $(stat -c %Y /tmp/heartbeat) )) -lt 60 ]'
+            periodSeconds: 3
+            timeoutSeconds: 5
+            failureThreshold: 40
+
+          resources:
+            # Measured over a full 3000-row drain with three replicas, not
+            # estimated. cgroup memory.current was 314-328 MiB idle and
+            # 369-492 MiB working; memory.peak reached 710 MiB on the busiest
+            # replica. Encoding a 100-chunk batch is what drives the peak.
+            #
+            # 900Mi leaves 27% headroom over that peak. No OOM kill was observed
+            # across the whole demo, including a SIGKILL and restart.
+            #
+            # Deliberately NOT raised to 1Gi. Three replicas at 900Mi plus the
+            # API, Postgres and Redis already declare 7052Mi of limits against a
+            # 7934Mi VM, which is 89%. Going to 1Gi each would leave under
+            # 512Mi for the node's own kubelet and containerd. If the frontend
+            # and the ingestion Job need room, the answer is 2 replicas or a
+            # bigger Docker VM, not a bigger ceiling here.
+            #
+            # cpu: 1 is the real throughput limit. Each replica sustains about
+            # 5.3 chunks/sec against the ~50/sec a single unconstrained worker
+            # reaches, so three replicas drain roughly 16/sec. That is a
+            # deliberate trade to keep the API responsive on a shared 11-core VM.
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 900Mi
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

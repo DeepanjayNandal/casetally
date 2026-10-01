@@ -1,0 +1,69 @@
+# Single-host, path-based routing for the whole application.
+#
+#   /          -> casetally-frontend:3000
+#   /v1        -> casetally-api:3001
+#   /health    -> casetally-api:3001
+#
+# Standard Ingress rather than Gateway API. Gateway API is where Kubernetes
+# ingress is heading, and it is the better answer for multi-team clusters: Gateway
+# and HTTPRoute split infrastructure ownership from route ownership, and it
+# expresses header matching, traffic splitting and filters natively instead of
+# through vendor annotations. None of that applies here. This is one app, one
+# host, three path prefixes, owned by one person, and it needs no feature that
+# Ingress cannot express. Gateway API would add three CRDs and two extra objects
+# to describe the same three routes, so Ingress is the smaller correct tool. The
+# thing that would change this is needing per-route middleware or traffic
+# splitting, and that is the point at which it should be revisited.
+#
+# No host field, deliberately. The rule matches any Host header, so
+# http://localhost works with no setup. Note the limit honestly: the frontend
+# bundle has http://localhost baked in as NEXT_PUBLIC_BACKEND_URL, so serving the
+# page on a different hostname would leave it calling an origin different from the
+# one it was loaded from. That is a frontend rebuild, not an ingress change.
+#
+# Same origin is the entire point of routing both through one host: the browser
+# makes the page request and its API calls to the same scheme, host and port, so
+# CORS never enters the picture.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: casetally
+  namespace: casetally
+  labels:
+    app.kubernetes.io/name: casetally
+    app.kubernetes.io/part-of: casetally
+spec:
+  # Named explicitly rather than leaning on the default-class annotation.
+  ingressClassName: traefik
+
+  rules:
+    - http:
+        paths:
+          # More specific prefixes first for readability. Traefik does not rely
+          # on document order: it assigns router priority by rule length, so
+          # /v1 and /health outrank / regardless of how they are listed. Worth
+          # knowing, because an ingress controller that matched in order would
+          # send everything to the frontend.
+          - path: /v1
+            pathType: Prefix
+            backend:
+              service:
+                name: casetally-api
+                port:
+                  number: 3001
+
+          - path: /health
+            pathType: Prefix
+            backend:
+              service:
+                name: casetally-api
+                port:
+                  number: 3001
+
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: casetally-frontend
+                port:
+                  number: 3000

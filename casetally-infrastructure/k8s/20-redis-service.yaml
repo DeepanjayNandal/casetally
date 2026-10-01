@@ -1,0 +1,28 @@
+# ClusterIP Service for Redis.
+#
+# ClusterIP rather than headless, which is the opposite of the Postgres choice.
+# Redis here holds only disposable worker state, so any replica answering is as
+# good as any other and a stable virtual IP is what callers want. Postgres is
+# headless because a database is not interchangeable behind a load balancer.
+#
+# The name matches REDIS_HOST in the ConfigMap and the compose container name,
+# so worker config is identical in both stacks.
+apiVersion: v1
+kind: Service
+metadata:
+  name: casetally-redis
+  namespace: casetally
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: casetally
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: casetally
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+      protocol: TCP

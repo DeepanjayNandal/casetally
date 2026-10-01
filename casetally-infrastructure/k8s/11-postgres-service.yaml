@@ -1,0 +1,34 @@
+# Headless Service (clusterIP: None) backing the Postgres StatefulSet.
+#
+# Headless rather than ClusterIP because a database is not interchangeable
+# behind a load balancer. DNS returns the pod address directly, and the
+# StatefulSet additionally gets a stable per-pod name:
+#
+#   casetally-postgres                    -> the pod's IP (what clients use)
+#   casetally-postgres-0.casetally-postgres.casetally.svc.cluster.local
+#
+# The service name is kept identical to the compose container_name
+# ("casetally-postgres") so DATABASE_URL differs between compose and k8s only
+# in the port, and nothing downstream has to learn a new hostname.
+apiVersion: v1
+kind: Service
+metadata:
+  name: casetally-postgres
+  namespace: casetally
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: casetally
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: casetally
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+      protocol: TCP
+  # Keep the DNS record present while the pod is still starting, so a client
+  # that comes up first gets "connection refused" (fast, retryable) instead of
+  # NXDOMAIN, which several drivers cache.
+  publishNotReadyAddresses: true

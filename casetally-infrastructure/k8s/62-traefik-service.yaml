@@ -1,0 +1,46 @@
+# IngressClass and a Service for Traefik.
+#
+# The Service is not how traffic actually arrives: the controller binds hostPort
+# 80/443 directly and kind forwards the host's ports to the node. The Service
+# exists so other things in the cluster can reach the proxy by name, and so
+# `kubectl get svc` tells an accurate story about what is listening.
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: traefik
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/part-of: casetally
+  annotations:
+    # The default class for this cluster, so an Ingress that omits
+    # ingressClassName is still picked up. 63-ingress.yaml names it explicitly
+    # anyway, because relying on a default is how you end up with an Ingress that
+    # silently nothing serves.
+    ingressclass.kubernetes.io/is-default-class: "true"
+spec:
+  controller: traefik.io/ingress-controller
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: traefik
+  namespace: casetally
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: casetally
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/part-of: casetally
+  ports:
+    - name: web
+      port: 80
+      targetPort: web
+      protocol: TCP
+    - name: websecure
+      port: 443
+      targetPort: websecure
+      protocol: TCP

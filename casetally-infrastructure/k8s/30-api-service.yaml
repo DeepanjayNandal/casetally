@@ -1,0 +1,30 @@
+# ClusterIP Service in front of the API pods.
+#
+# ClusterIP rather than headless: API pods are genuinely interchangeable, so
+# one virtual IP load balancing across ready endpoints is exactly right. This
+# is the opposite of the Postgres Service, which is headless because a database
+# is not interchangeable.
+#
+# Endpoint membership is what makes the rolling update safe. A pod joins only
+# once its readiness probe passes, and leaves the moment it fails or the pod
+# starts terminating, which is what the preStop sleep in the Deployment gives
+# time to propagate.
+apiVersion: v1
+kind: Service
+metadata:
+  name: casetally-api
+  namespace: casetally
+  labels:
+    app.kubernetes.io/name: api
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: casetally
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: api
+    app.kubernetes.io/part-of: casetally
+  ports:
+    - name: http
+      port: 3001
+      targetPort: http
+      protocol: TCP

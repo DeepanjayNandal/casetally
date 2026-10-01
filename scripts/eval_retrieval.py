@@ -98,6 +98,46 @@ BENCHMARK: List[Dict] = [
         "expected_titles": [28, 18],
         "label": "Habeas corpus (Title 28)",
     },
+    # -----------------------------------------------------------------------
+    # Employment group: colloquial phrasing, added as a regression test.
+    #
+    # These are written the way a person actually asks, not the way a statute is
+    # written, which is the failure this group exists to catch. The federal
+    # protections live in Title 42 (Title VII at 42 U.S.C. 2000e, ADA at 12112)
+    # and Title 29 (ADEA at 623, FMLA at 2615, NLRA at 158).
+    #
+    # Expectations are title numbers rather than citations on purpose. Ingestion
+    # collapses Title VII's subsections under the parent citation
+    # "42 U.S.C. § 2000e", so there is no "2000e-2" citation to assert on.
+    #
+    # The first is the README's headline example. The other three are held out:
+    # they must not be used to tune the rewrite prompt, or this group stops
+    # measuring generalisation and starts measuring overfitting.
+    # -----------------------------------------------------------------------
+    {
+        "query": "can my boss fire me",
+        "expected_titles": [42, 29],
+        "label": "Wrongful termination (headline)",
+        "group": "employment",
+    },
+    {
+        "query": "can I be fired for my age",
+        "expected_titles": [42, 29],
+        "label": "Age discrimination (held out)",
+        "group": "employment",
+    },
+    {
+        "query": "my employer fired me for being pregnant",
+        "expected_titles": [42, 29],
+        "label": "Pregnancy discrimination (held out)",
+        "group": "employment",
+    },
+    {
+        "query": "can I get fired for joining a union",
+        "expected_titles": [42, 29],
+        "label": "Union retaliation (held out)",
+        "group": "employment",
+    },
 ]
 
 
@@ -184,8 +224,18 @@ def run_eval(backend: str, top_k: int, use_rewrite: bool = False) -> None:
     print("-" * 88)
 
     p3_all, r5_all, rr_all, lat_all = [], [], [], []
+    # Per-group tallies. The "core" 15 are reported separately from any group
+    # added later, so adding queries cannot silently move the headline numbers
+    # this project quotes and make a regression look like an improvement.
+    groups: Dict[str, Dict[str, List[float]]] = {}
+    current_group = None
 
     for item in BENCHMARK:
+        group = item.get("group", "core")
+        if group != current_group:
+            if current_group is not None:
+                print("-" * 88)
+            current_group = group
         try:
             query = item["query"]
             if use_rewrite:
@@ -204,6 +254,12 @@ def run_eval(backend: str, top_k: int, use_rewrite: bool = False) -> None:
         rr_all.append(rr)
         lat_all.append(took_ms)
 
+        g = groups.setdefault(group, {"p3": [], "r5": [], "rr": [], "lat": []})
+        g["p3"].append(p3)
+        g["r5"].append(r5)
+        g["rr"].append(rr)
+        g["lat"].append(took_ms)
+
         label = item["label"][:41]
         print(f"  {label:<42} {p3:>5.2f} {r5:>5.2f} {rr:>5.2f} {took_ms:>5}ms")
 
@@ -216,12 +272,22 @@ def run_eval(backend: str, top_k: int, use_rewrite: bool = False) -> None:
     p95 = lat_sorted[int(len(lat_sorted) * 0.95)]
 
     print("=" * 88)
-    print(
-        f"  {'MEAN':<42} {statistics.mean(p3_all):>5.2f}"
-        f" {statistics.mean(r5_all):>5.2f}"
-        f" {statistics.mean(rr_all):>5.2f}"
-        f" {int(statistics.mean(lat_all)):>5}ms"
-    )
+    for name, g in groups.items():
+        print(
+            f"  {'MEAN (' + name + ', n=' + str(len(g['p3'])) + ')':<42}"
+            f" {statistics.mean(g['p3']):>5.2f}"
+            f" {statistics.mean(g['r5']):>5.2f}"
+            f" {statistics.mean(g['rr']):>5.2f}"
+            f" {int(statistics.mean(g['lat'])):>5}ms"
+        )
+    if len(groups) > 1:
+        print(
+            f"  {'MEAN (all, n=' + str(len(p3_all)) + ')':<42}"
+            f" {statistics.mean(p3_all):>5.2f}"
+            f" {statistics.mean(r5_all):>5.2f}"
+            f" {statistics.mean(rr_all):>5.2f}"
+            f" {int(statistics.mean(lat_all)):>5}ms"
+        )
     print(f"\n  Latency — p50: {p50}ms   p95: {p95}ms")
     print(f"  Queries run : {len(p3_all)} / {len(BENCHMARK)}")
     print()

@@ -54,6 +54,25 @@ class QueryEmbeddingService:
                 logger.warning("Could not move model to %s: %s", self.device, exc)
         return self._model
 
+    def warmup(self) -> bool:
+        """Load the model and run one encode so the first real request is fast.
+
+        Touches only the model: no database, no external API. Startup must not
+        depend on Postgres or Groq being reachable.
+        """
+        if not self.enabled:
+            logger.info("Vector search disabled; skipping embedding warmup")
+            return False
+        started = time.perf_counter()
+        vec = self.embed("warmup")
+        if vec is None:
+            logger.warning("Warmup produced no embedding; vector search unavailable")
+            return False
+        logger.info(
+            "Embedding model warm in %.1fs (dim=%d)", time.perf_counter() - started, len(vec)
+        )
+        return True
+
     def embed(self, query: str) -> Optional[List[float]]:
         model = self._get_model()
         if model is None:

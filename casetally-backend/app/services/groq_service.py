@@ -37,6 +37,47 @@ def _build_context(results: List[Dict[str, Any]]) -> str:
 
 
 class GroqService:
+    # Upper bound on rewrite length, enforced in code as well as in the prompt.
+    REWRITE_MAX_WORDS = 10
+
+    # The rewrite exists to cross a vocabulary gap, not to make the question
+    # sound more legal. Statutes are written in formal operative language, and a
+    # user's words often appear nowhere in the corpus while the concept is
+    # present under different wording. A rewrite that adds plausible-sounding
+    # legal English without matching how statutes are actually written makes
+    # retrieval worse, not better: it can inject terms with zero occurrences and
+    # amplify a common word used in an unrelated sense.
+    #
+    # The examples below are drawn from areas outside the evaluation benchmark on
+    # purpose. Examples from benchmark domains would tune the prompt to the test
+    # and stop it measuring generalisation.
+    REWRITE_SYSTEM_PROMPT = (
+        "You turn a question into search terms for a database of U.S. statutes. "
+        "The database contains the literal text of the statutes, so the terms must "
+        "be words that appear in statutory language.\n"
+        "\n"
+        "Rules:\n"
+        "1. Output 3 to 6 terms, at most 10 words in total.\n"
+        "2. Use the formal operative wording a statute would use, not everyday "
+        "wording and not practitioner shorthand.\n"
+        "3. Prefer the words that create a duty, prohibition, right or penalty: "
+        "the verbs and nouns the statute itself would use.\n"
+        "4. Do not output doctrine or case-law names, or labels that describe a "
+        "rule from the outside. Those appear in commentary, not in statutes.\n"
+        "5. Output only the terms, separated by spaces. No punctuation, no "
+        "explanation, no numbering.\n"
+        "\n"
+        "Examples of the shift from everyday to statutory wording:\n"
+        "  will I get deported -> removal proceedings inadmissible alien\n"
+        "  the bank hid fees from me -> finance charge disclosure creditor\n"
+        "  hurt working on a ship -> seaman vessel injury liability\n"
+        "  benefits for my army injury -> veteran service-connected disability compensation\n"
+        "  school will not give me my records -> education records disclosure consent\n"
+        "\n"
+        "Note what each example avoids: 'deported', 'hid fees' and 'army' do not "
+        "appear in the statutes that govern them."
+    )
+
     def __init__(self):
         self.model = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
         # gpt-oss and qwen models on Groq emit reasoning tokens before their
@@ -97,27 +138,53 @@ class GroqService:
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Convert the user's question into 3-6 precise legal search terms "
-                        "suitable for searching U.S. statutes. Output only the search terms, "
-                        "no punctuation, no explanation."
-                    ),
-                },
+                {"role": "system", "content": self.REWRITE_SYSTEM_PROMPT},
                 {"role": "user", "content": query},
             ],
             stream=False,
             temperature=0.0,
-            # Budget covers reasoning tokens as well as the terms themselves;
-            # 32 was sized for a non-reasoning model and yields empty output.
-            max_tokens=250,
+            # Budget covers reasoning tokens as well as the terms themselves, and
+            # the terms are only ever a handful of words, so almost all of this is
+            # reasoning headroom.
+            #
+            # 250 was enough for the previous one-sentence prompt. This prompt has
+            # rules and examples, which makes the model reason longer, and at 250
+            # it hit finish_reason=length with content='' on some queries: the
+            # whole budget went to reasoning and nothing was emitted. The caller
+            # then silently fell back to the unrewritten query, so the failure
+            # looked like a rewrite that did nothing rather than one that never
+            # finished. 512 leaves room; the empty case is logged below so a
+            # recurrence is visible instead of silent.
+            max_tokens=512,
             extra_body=self._extra(),
         )
         rewritten = response.choices[0].message.content or ""
+        if not rewritten.strip():
+            logger.warning(
+                "rewrite produced no content (finish_reason=%s, completion_tokens=%s); "
+                "falling back to the original query",
+                response.choices[0].finish_reason,
+                getattr(response.usage, "completion_tokens", "?"),
+            )
         # Models may return one term per line; collapse to a single query string.
         rewritten = " ".join(rewritten.split())
-        return rewritten.strip() or query
+        rewritten = rewritten.strip()
+        if not rewritten:
+            return query
+
+        # Hard cap, because the prompt alone does not reliably hold the model to
+        # a length. Asked for "3-6 terms" it has returned 16 words, and the
+        # lexical branch requires every term to appear in one chunk, so a long
+        # rewrite can make that branch match nothing at all and silently reduce
+        # hybrid search to vector-only.
+        words = rewritten.split()
+        if len(words) > self.REWRITE_MAX_WORDS:
+            logger.warning(
+                "rewrite returned %d words, truncating to %d: %r",
+                len(words), self.REWRITE_MAX_WORDS, rewritten,
+            )
+            rewritten = " ".join(words[: self.REWRITE_MAX_WORDS])
+        return rewritten
 
     def is_available(self) -> bool:
         return bool(os.getenv("GROQ_API_KEY"))

@@ -5,7 +5,14 @@ import { ChevronRight, BookOpen, FileX } from "lucide-react"
 import { Nav } from "@/components/nav"
 import { LegalTextRenderer } from "@/components/legal-text-renderer"
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001"
+// ?? rather than ||: an empty string is a MEANINGFUL value here. Built with
+// NEXT_PUBLIC_BACKEND_URL="" the requests become relative ("/v1/search"), so the
+// bundle is same-origin on whatever host serves it and works behind any ingress
+// hostname without a rebuild. With || an empty string is falsy and would silently
+// fall back to the dev default below, hard-coding localhost into the bundle.
+// The fallback still applies when the variable is genuinely unset, which is what
+// `npm run dev` relies on.
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001"
 
 // U.S. Code titles 1-54 (static list — titles don't change). Title 53 is
 // reserved with no content and is filtered out of the rendered list below,

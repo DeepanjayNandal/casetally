@@ -20,7 +20,14 @@ import {
   PanelRightClose,
 } from "lucide-react"
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001"
+// ?? rather than ||: an empty string is a MEANINGFUL value here. Built with
+// NEXT_PUBLIC_BACKEND_URL="" the requests become relative ("/v1/search"), so the
+// bundle is same-origin on whatever host serves it and works behind any ingress
+// hostname without a rebuild. With || an empty string is falsy and would silently
+// fall back to the dev default below, hard-coding localhost into the bundle.
+// The fallback still applies when the variable is genuinely unset, which is what
+// `npm run dev` relies on.
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001"
 
 // TODO: Replace with real backend data once connected
 const MOCK_MESSAGES = [

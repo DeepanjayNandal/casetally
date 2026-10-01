@@ -38,7 +38,7 @@ This service does not own:
 ## Request Pipeline — `/v1/chat/stream`
 
 1. Rewrite user query into legal terminology via Groq (`rewrite_query`)
-2. Lexical retrieval using `plainto_tsquery` + `ts_rank_cd` cover-density ranking
+2. Lexical retrieval using OR-joined `to_tsquery` + `ts_rank_cd` cover-density ranking
 3. Vector retrieval using pgvector HNSW cosine distance (`embedding <=> query_vector`)
 4. Score normalization + weighted fusion into `hybrid_score`
 5. Top 3 chunks sent to Groq (`openai/gpt-oss-20b`) for answer generation

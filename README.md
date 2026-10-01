@@ -8,7 +8,13 @@ A legal research platform for searching U.S. statutes, codes, and regulations us
 
 Ask any legal question in plain English. CaseTally rewrites your question into legal terminology, searches 83,706 U.S. Code chunks using hybrid full-text + vector search, and streams a cited answer back in real time.
 
-> "Can my boss fire me?" → rewrites to → "wrongful termination at-will employment exceptions" → retrieves exact statutes → streams grounded answer
+> "Can I be fired for my age?" → rewrites to → "age discrimination employment unlawful termination prohibited"
+> → retrieves 29 U.S.C. § 623 → streams an answer quoting the statute's own words
+
+The example is deliberately one that works. "Can my boss fire me?" does not: it still returns
+pension-plan termination statutes, because the statutes that answer it say "discharge" while the
+question and its rewrite say "termination", which in this corpus overwhelmingly means plan
+termination. It is in the eval set as a failing regression test.
 
 ---
 
@@ -42,8 +48,8 @@ Browser
                      ts_rank_cd      HNSW cosine sim
                            └────────┬────────┘
                                     ▼
-                             Score fusion
-                             (hybrid_score)
+                          Reciprocal rank fusion
+                               (k=20)
                                     ▲
                              EmbeddingWorker
                (offline, NULL-column queue, Redis-tracked)
@@ -60,18 +66,17 @@ Browser
    └─ Rewrites to: "tax debt collection unpaid tax penalties tax lien 26 usc 6851"
 
 3. Hybrid Search (PostgreSQL)
-   ├─ Lexical: ts_rank_cd(search_vector, plainto_tsquery(...))  top 50
+   ├─ Lexical: ts_rank_cd(search_vector, OR-joined to_tsquery)  top 50
    ├─ Vector: embedding <=> query_vector  [HNSW index]          top 50
-   ├─ Normalize scores 0→1 independently
-   └─ Fuse:   hybrid_score = 0.5*lexical + 0.5*vector → top 3
+   └─ Fuse:   reciprocal rank fusion, k=20 → top 10
 
 4. LLM Answer (Groq, streaming)
-   ├─ Top 3 chunk snippets sent as context
+   ├─ Top 3 of those 10 chunks sent as context
    ├─ openai/gpt-oss-20b generates cited answer
    └─ Tokens streamed via SSE → react-markdown renders live
 
-5. Sources panel: separate /v1/search call (top 10) renders
-   source cards with relevance scores
+5. Sources panel: the same retrieval, emitted as an SSE "sources"
+   event before the first token. One search serves both
 ```
 
 ---
@@ -88,7 +93,7 @@ Browser
 ### `casetally-backend` — FastAPI (port 3001)
 
 - `POST /v1/chat/stream` — query rewrite → hybrid search → SSE-streamed LLM answer
-- `POST /v1/search` — hybrid search only, p50 18ms retrieval across 83k+ chunks
+- `POST /v1/search` — hybrid search only, p50 97ms retrieval across 83k+ chunks (see Evaluation for how measured)
 - `POST /v1/rewrite` — exposes query rewriting as a standalone endpoint
 - `GET /health/ready` — liveness + real DB ping
 - Query rewriting via `GroqService.rewrite_query()` before every retrieval
@@ -144,7 +149,7 @@ Browser
 ## Key Technical Decisions
 
 **Why hybrid search?**
-Legal text has precise terminology — `§ 1983`, `habeas corpus`, `mens rea`. PostgreSQL full-text search, ranked with `ts_rank_cd` cover density, catches exact statute numbers that semantic search misses. Vector search catches meaning when phrasing differs. Fusion beats either alone.
+Legal text has precise terminology — `§ 1983`, `habeas corpus`, `mens rea`. PostgreSQL full-text search, ranked with `ts_rank_cd` cover density over OR-joined terms, catches exact statute numbers that semantic search misses. Vector search catches meaning when phrasing differs. Fusion beats either alone.
 
 **Why query rewriting?**
 User language and legal language don't match. "Can my boss fire me?" contains none of the words in the statutes that answer it, and rewrites to "termination rights employee termination unlawful dismissal at-will employment" before retrieval. Measured effect is a trade-off: MRR improves 10% while Precision@3 and Recall@5 drop slightly, so the right statute ranks higher but the top-5 window gets noisier.
@@ -162,33 +167,60 @@ Single database keeps full-text and vector search in one query with no cross-ser
 
 ## Evaluation
 
-A retrieval evaluation harness lives in `scripts/eval_retrieval.py`. It runs 15 benchmark legal queries against the live search endpoint and measures:
+A retrieval evaluation harness lives in `scripts/eval_retrieval.py`. It runs 19 benchmark legal queries in two groups against the live search endpoint and measures:
 
 - **Precision@3** — fraction of top-3 results from the correct U.S. Code title
 - **Recall@5** — fraction of expected titles found in top-5 results
 - **MRR** — mean reciprocal rank of the first relevant result
+
+The **core** group is the original 15 queries. The **employment** group is 4 colloquially-phrased
+queries added as a regression test, reported separately so adding them cannot move the core
+numbers.
 
 ```bash
 python scripts/eval_retrieval.py
 python scripts/eval_retrieval.py --backend http://localhost:3001 --top-k 5 --rewrite
 ```
 
-### Results (local instance, warm model, all 53 titles ingested)
+### Results (core 15 queries)
 
 Two modes: raw hybrid search, and hybrid search with LLM query rewriting (the actual user-facing flow).
 
 | Metric | Without rewriting | With rewriting |
 | --- | --- | --- |
-| Mean Precision@3 | 0.67 | 0.62 |
-| Mean Recall@5 | 0.76 | 0.69 |
-| Mean MRR | 0.69 | 0.76 |
-| p50 latency | 18ms | 33ms (incl. rewrite call) |
-| p95 latency | 36ms | 45ms |
+| Mean Precision@3 | 0.76 | 0.76 |
+| Mean Recall@5 | 0.81 | 0.77 |
+| Mean MRR | 0.85 | 0.82 |
+| p50 latency | 97ms | 367ms (incl. rewrite call) |
+| p95 latency | 574ms | 664ms |
 
-Query rewriting is a trade-off rather than a uniform gain. It improves MRR by 10% — the first
-relevant statute ranks higher — while lowering Precision@3 and Recall@5, because the expanded
-query pulls in more loosely-related neighbours across the top-5 window. For a product where the
-user reads result one, MRR is the metric that matters.
+**How these were measured.** `scripts/eval_retrieval.py` against the Kubernetes deployment,
+through a `kubectl port-forward` to the API Service, with the embedding model warm and all 53
+titles ingested. Latency is the server-reported `took_ms`, so it covers retrieval and fusion but
+not the port-forward hop. Without rewriting the numbers are deterministic and reproduce exactly.
+With rewriting they do not: the rewrite is a live LLM call, so the core means hold at
+0.76 / 0.77 / 0.82 across runs while individual queries move.
+
+**Latency is much higher than it used to be, and the cause is known.** An earlier version of this
+table reported p50 18ms. Two things changed. The lexical branch now ORs query terms instead of
+ANDing them, which grows the candidate pool into the tens of thousands, and `LIMIT` bounds what is
+returned rather than what is scanned. And these numbers come from the Kubernetes deployment rather
+than from Docker Compose on the host. The trade bought Precision@3 0.64 to 0.76 and MRR 0.69 to
+0.85 without rewriting; sub-second retrieval is an acceptable price, but it is a real regression
+and not a measurement artefact.
+
+**Query rewriting is no longer the clear trade-off it was.** It used to cost Precision@3 and
+Recall@5 to buy MRR. After the rewrite prompt was changed to produce statutory wording, the two
+modes are close on the core group, and rewriting is what makes the colloquial employment group work
+at all: it is the difference between a mean MRR of 0.38 and roughly 0.71 to 1.00 there.
+
+### Results (employment group, 4 queries)
+
+Added because the project's own headline example, "can my boss fire me", returned pension and tax
+statutes. These scores should be read with care: relevance is scored by U.S. Code title number, and
+Titles 42 and 29 are large, so a pension section in Title 29 counts as relevant for an unfair
+dismissal question. The group is a regression tripwire, not a quality measure. Whether the
+protection statute itself reaches the model has to be checked by reading the answer.
 
 **Effect of corpus coverage.** An earlier run against 22 of 53 titles (32,969 chunks) scored
 P@3 0.31, R@5 0.34, MRR 0.39. Seven benchmark queries scored 0.00 purely because their titles
@@ -196,11 +228,14 @@ were absent. Ingesting the remaining 31 titles more than doubled every metric, a
 *improved* despite 2.5x the data, since HNSW lookup is sub-linear in corpus size.
 
 **A query that still fails.** "Wire fraud criminal penalties" scores 0.00 in both modes even
-though `18 U.S.C. § 1343` is present with correct text. Three factors compound: `plainto_tsquery`
-requires every term to appear in a single chunk, 512-word chunking scatters the statute's terms
-across chunks, and "wire fraud" is a colloquial label absent from statutory text that reads
-"scheme or artifice to defraud" transmitted "by means of wire". The governing chunk contains
-neither "criminal" nor any form of "penalty", so the full-text branch excludes it before ranking begins.
+though `18 U.S.C. § 1343` is present with correct text. Two factors remain: 512-word chunking
+scatters the statute's terms across chunks, and "wire fraud" is a colloquial label absent from
+statutory text that reads "scheme or artifice to defraud" transmitted "by means of wire". The
+governing chunk contains neither "criminal" nor any form of "penalty".
+
+The original diagnosis also blamed `plainto_tsquery` requiring every term in one chunk. That is
+fixed: the lexical branch now ORs terms, so the branch no longer excludes the chunk before ranking.
+The query still scores 0.00, which means the vocabulary gap alone is sufficient to fail it.
 
 Full per-query output for both modes is committed to `scripts/eval_results.txt`.
 

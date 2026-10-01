@@ -5,7 +5,7 @@ PostgreSQL + pgvector microservice for all CaseTally persistent data.
 ## Service Summary
 
 - Service name: `casetally-db`
-- Runtime: PostgreSQL 16 (image based on `ankane/pgvector`)
+- Runtime: PostgreSQL 15.4 (image based on `ankane/pgvector`, which is retired and frozen at that version)
 - Primary responsibility: store legal corpus, artifacts, and operational metadata.
 - Schema style: citation-centric (`legal_chunks` + `legal_artifacts`).
 

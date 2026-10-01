@@ -94,7 +94,7 @@ Browser
 - Query rewriting via `GroqService.rewrite_query()` before every retrieval
 - Vector search degrades to full-text-only when the embedding model is unavailable — the package failed to import, or `SEARCH_EMBEDDING_ENABLED=false` — and the response reports `embedding_used` so the path taken is visible. This covers the model being *unavailable*, not *failing*: a load or encode error mid-request propagates as a 500
 
-### `casetally-db` — PostgreSQL 16 + pgvector
+### `casetally-db` — PostgreSQL 15 + pgvector
 
 - `legal_chunks` table — 83,706 rows, each with `text_content`, `search_vector` (tsvector), `embedding` (vector(384))
 - HNSW index on `embedding` column for sub-linear ANN lookup
@@ -132,7 +132,7 @@ Browser
 | --- | --- |
 | Frontend | Next.js 16, React 19, TypeScript |
 | Backend | Python 3.11, FastAPI, SQLAlchemy 2.0 |
-| Database | PostgreSQL 16 + pgvector |
+| Database | PostgreSQL 15 + pgvector |
 | Search | Hybrid PostgreSQL full-text (`ts_rank_cd`) + vector, HNSW indexing |
 | Embeddings | sentence-transformers (all-MiniLM-L6-v2, 384-dim) |
 | LLM | Groq API (openai/gpt-oss-20b) |
@@ -206,7 +206,66 @@ Full per-query output for both modes is committed to `scripts/eval_results.txt`.
 
 ---
 
-## Local Setup
+## Kubernetes (primary local setup)
+
+The whole stack runs on a local [kind](https://kind.sigs.k8s.io/) cluster. This is
+now the primary way to run CaseTally locally. Docker Compose still works and is
+documented below, but Kubernetes is where the components, probes, scaling and
+failure behaviour actually live.
+
+```bash
+cd casetally-infrastructure/k8s
+./up.sh          # cluster, images, manifests, corpus restore, smoke tests
+./down.sh        # delete the cluster
+```
+
+Then open <http://localhost>.
+
+`up.sh` is idempotent and reuses images it has already built. Pass `--rebuild`
+after changing application code.
+
+### What runs where
+
+| Component | Kind | Replicas | Notes |
+| --- | --- | --- | --- |
+| Postgres 16 + pgvector 0.8.6 | StatefulSet | 1 | 8Gi PVC, schema from `init.sql` via ConfigMap |
+| Redis 7 | Deployment | 1 | No persistence, worker state only |
+| API (FastAPI) | Deployment | 2 | Model warm before the port opens |
+| Embedding worker | Deployment | 2 | No Service, `SKIP LOCKED` queue |
+| Frontend (Next.js) | Deployment | 2 | Standalone output, relative API URLs |
+| Traefik | Deployment | 1 | hostPort 80/443, path-based routing |
+| Ingestion | Job | 1 | One-shot, advisory-locked |
+
+Routing is single-origin, so there is no CORS: `/` serves the frontend, `/v1` and
+`/health` go to the API.
+
+Secrets are `POSTGRES_PASSWORD` and `GROQ_API_KEY` only, read from a gitignored
+`casetally-infrastructure/k8s/.env.k8s`. `DATABASE_URL` is assembled in the pod
+spec so the password has one source of truth. See
+[`secret.example.yaml`](casetally-infrastructure/k8s/secret.example.yaml).
+
+### Worker demo
+
+The corpus is fully embedded, so the worker queue is normally empty.
+`demo-worker.sh` manufactures a backlog, then proves across a graceful shutdown
+and a real SIGKILL that no row is lost or embedded twice:
+
+```bash
+cd casetally-infrastructure/k8s
+./demo-worker.sh backlog 3000 && ./demo-worker.sh watch
+./demo-worker.sh graceful     # or: ./demo-worker.sh crash
+./demo-worker.sh verify
+```
+
+Full runbook, design rationale and replay commands:
+[casetally-infrastructure/k8s/README.md](casetally-infrastructure/k8s/README.md).
+
+---
+
+## Local Setup (Docker Compose)
+
+Still supported, and the Kubernetes corpus was migrated out of it. Kubernetes is
+the primary local setup; use this for a quick single-service loop.
 
 ### Prerequisites
 

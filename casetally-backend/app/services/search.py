@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 import os
 import re
 import time
@@ -138,13 +138,55 @@ class HybridSearchService:
         self.embedding_service = QueryEmbeddingService()
 
     def _fetch_bm25(self, db: Session, query: str, limit: int, jurisdiction: Optional[str], document_type: Optional[str]):
+        # Ask Postgres for the query's lexemes rather than guessing them. This
+        # applies the same stemming and stopword list as the indexed
+        # search_vector, so the terms built below cannot disagree with the index.
+        # It touches no table, so it is cheap.
+        lexemes = [
+            row[0]
+            for row in db.execute(
+                text("SELECT lexeme FROM unnest(to_tsvector('english', :q))"),
+                {"q": query},
+            ).all()
+        ]
+        if not lexemes:
+            return []
+
+        # Any term may match, and ts_rank_cd decides what is actually relevant.
+        #
+        # ANDing every term, which plainto_tsquery does, requires all of them in
+        # one 512-word chunk. That constraint gets harder the better the query is:
+        # on this corpus "freedom of speech First Amendment" matched 2 chunks and
+        # the more precise "Congress shall make no law abridge freedom of speech"
+        # matched 0, and every multi-term rewrite of "can my boss fire me" matched
+        # 0. When this branch returns nothing, hybrid search silently becomes
+        # vector-only.
+        #
+        # A minimum-match requirement was the obvious guard against OR becoming
+        # noise, and it was measured and rejected. Requiring any two lexemes to
+        # co-occur shrank the candidate pool 7x as intended, but it made retrieval
+        # worse, not better: on the same fixed query strings, Title VII's lexical
+        # rank went from 4 under plain OR to 402 under min-2, and ADEA from 19 to
+        # 2339. The reason is that requiring two terms rewards chunks containing
+        # two COMMON words together, which in this corpus means pension and plan
+        # documents carrying both "employment" and "termination", while
+        # structurally excluding the chunk that matches one rare, highly
+        # discriminating term very strongly. ts_rank_cd already weights by cover
+        # density, so it handles that judgement better than a match-count filter
+        # does.
+        #
+        # The cost is latency: pool sizes grow into the tens of thousands and p50
+        # went from roughly 45ms to a few hundred. The LIMIT bounds what is
+        # returned, not what is scanned.
+        tsq = "|".join(lexemes)
+
         sql = text(
             """
             SELECT id, citation, clause_id, text_content, jurisdiction, document_type, tags,
-                   ts_rank_cd(search_vector, plainto_tsquery('english', :query)) AS bm25_score
+                   ts_rank_cd(search_vector, to_tsquery('english', :tsq)) AS bm25_score
             FROM legal_chunks
             WHERE is_current = TRUE
-              AND search_vector @@ plainto_tsquery('english', :query)
+              AND search_vector @@ to_tsquery('english', :tsq)
               AND (:jurisdiction IS NULL OR jurisdiction = :jurisdiction)
               AND (:document_type IS NULL OR document_type = :document_type)
             ORDER BY bm25_score DESC
@@ -154,7 +196,7 @@ class HybridSearchService:
         rows = db.execute(
             sql,
             {
-                "query": query,
+                "tsq": tsq,
                 "limit": limit,
                 "jurisdiction": jurisdiction,
                 "document_type": document_type,

@@ -290,10 +290,11 @@ corpus. `down.sh --keep-data` drops the workloads but keeps the database.
 | Postgres 16 + pgvector 0.8.6 | StatefulSet | 1 | 8Gi PVC, schema from `init.sql` via ConfigMap |
 | Redis 7 | Deployment | 1 | No persistence, worker state only |
 | API (FastAPI) | Deployment | 2 | Model warm before the port opens |
-| Embedding worker | Deployment | 2 | No Service, `SKIP LOCKED` queue |
+| Embedding worker | Deployment | **0-3, autoscaled** | No Service, `SKIP LOCKED` queue; KEDA scales it on queue depth |
 | Frontend (Next.js) | Deployment | 2 | Standalone output, relative API URLs |
 | Traefik | Deployment | 1 | hostPort 80/443, path-based routing |
-| Ingestion | Job | 1 | One-shot, advisory-locked |
+| Ingestion | Job | 1 | One-shot, advisory-locked; pause the ScaledObject first |
+| KEDA 2.21.0 | 3 Deployments | 1 each | In the `keda` namespace; memory limits trimmed to 192Mi each from upstream's 1000Mi |
 
 Routing is single-origin, so there is no CORS: `/` serves the frontend, `/v1` and
 `/health` go to the API.
@@ -305,9 +306,11 @@ spec so the password has one source of truth. See
 
 ### Worker demo
 
-The corpus is fully embedded, so the worker queue is normally empty.
-`demo-worker.sh` manufactures a backlog, then proves across a graceful shutdown
-and a real SIGKILL that no row is lost or embedded twice:
+The corpus is fully embedded, so the worker queue is normally empty and the
+worker tier normally runs **zero** replicas. `demo-worker.sh` manufactures a
+backlog, lets KEDA scale the tier up on its own, and proves across a graceful
+shutdown, a real SIGKILL and KEDA's own scale-downs that no row is lost or
+embedded twice:
 
 ```bash
 cd casetally-infrastructure/k8s
@@ -315,6 +318,41 @@ cd casetally-infrastructure/k8s
 ./demo-worker.sh graceful     # or: ./demo-worker.sh crash
 ./demo-worker.sh verify
 ```
+
+Nothing in the demo scales anything by hand. `watch` shows the replica count
+climbing and falling as the queue drains. Measured on a 3,000 row backlog:
+
+| | Measured across 3 runs |
+| --- | --- |
+| first worker Ready, from an empty tier | 16-21s |
+| first row committed | 24-31s |
+| 3 replicas Ready | 17-21s |
+| queue drained | 152-182s |
+| back to 0 replicas after the queue emptied | 61s |
+
+The tier also steps **down** while still working, 3 to 2 to 1 as the queue
+shrinks past each 1,000-row threshold, so the demo exercises a scale-down landing
+on a busy worker without anyone arranging it. Rows survive that for the same
+reason they survive SIGKILL: the queue is `embedding IS NULL` in Postgres and
+claims are held with `FOR UPDATE SKIP LOCKED` until commit.
+
+`verify` accounts for every row by pod, including pods that no longer exist:
+
+```text
+casetally-worker-9b79c8779-2p66v   committed 300
+casetally-worker-9b79c8779-h2ml9   committed 900
+casetally-worker-9b79c8779-7h9xt   committed 1500
+casetally-worker-9b79c8779-299b4   committed 300
+sum of per-worker committed = 3000   (N = 3000)
+```
+
+That tally is a Redis hash the worker increments after each commit returns, with
+no TTL and no deletion on shutdown, because autoscaling made the previous
+approach unworkable: it read each worker's log, and pods KEDA scaled away took
+their logs with them. The log-based cross-check in the same run reports 1800 of
+3000, which is the gap the hash exists to close. Redis runs without persistence,
+so a Redis restart mid-run resets the tally; the row-level checks against the
+backup table remain the authority.
 
 Full runbook, design rationale and replay commands:
 [casetally-infrastructure/k8s/README.md](casetally-infrastructure/k8s/README.md).

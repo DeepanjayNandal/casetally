@@ -1,8 +1,9 @@
 # CaseTally on Kubernetes (local)
 
-Local Kubernetes deployment of CaseTally, running on kind. No cloud, no Helm,
-no KEDA. Plain manifests applied with `kubectl`, so every object is readable in
-the file that creates it.
+Local Kubernetes deployment of CaseTally, running on kind. No cloud and no Helm:
+plain manifests applied with `kubectl`, so every object is readable in the file
+that creates it. KEDA is installed from its vendored release manifest, pinned by
+digest, for worker autoscaling.
 
 ## Service Summary
 
@@ -11,7 +12,7 @@ the file that creates it.
 - Database: PostgreSQL 16.15 with pgvector 0.8.6, StatefulSet, 8Gi PVC
 - Cache: Redis 7.4.11, Deployment, no persistence
 - API: FastAPI on uvicorn, Deployment, 2 replicas
-- Worker: embedding worker, Deployment, 3 replicas, no Service
+- Worker: embedding worker, Deployment, autoscaled 0-3 by KEDA on queue depth, no Service
 - Ingestion: one-shot Job, parallelism 1, advisory-locked
 - Frontend: Next.js standalone, Deployment, 2 replicas
 - Ingress: Traefik 3.3.7, hostPort 80/443, single host path-based routing
@@ -31,7 +32,7 @@ by side: kind binds host ports 80 and 443, compose uses 3000, 3001, 5433 and
 | Docker Desktop | 29.8.1 (7.75 GiB VM) |
 | kind | v0.33.0 |
 | kubectl | v1.36.1 |
-| node image | kindest/node:v1.37.0 (pinned by digest) |
+| node image | kindest/node:v1.36.4 (pinned by digest) |
 
 ## Files
 
@@ -52,7 +53,10 @@ the explicit list below.
 | `21-redis-deployment.yaml` | Redis 7, 1 replica, no persistence |
 | `30-api-service.yaml` | ClusterIP Service for the API |
 | `31-api-deployment.yaml` | FastAPI on uvicorn, 2 replicas, PDF mount |
-| `40-worker-deployment.yaml` | Embedding worker, 3 replicas, no Service |
+| `40-worker-deployment.yaml` | Embedding worker, no Service, no `replicas` (KEDA owns it) |
+| `41-worker-scaledobject.yaml` | ScaledObject + TriggerAuthentication for the worker |
+| `keda/keda-2.21.0.yaml` | Vendored KEDA release, images pinned by digest |
+| `keda/keda-resource-limits.yaml` | JSON patch trimming KEDA memory limits to 192Mi |
 | `50-ingestion-job.yaml` | One-shot US Code ingestion Job |
 | `60-traefik-rbac.yaml` | ServiceAccount, ClusterRole, binding |
 | `61-traefik-deployment.yaml` | Traefik controller, hostPort 80/443 |
@@ -96,8 +100,9 @@ docker build --platform linux/arm64 -t casetally-backend:0.2.0 ../../casetally-b
 kind load docker-image casetally-backend:0.2.0 --name casetally
 kubectl apply -f 30-api-service.yaml -f 31-api-deployment.yaml
 
-# 7. Worker
-kubectl apply -f 40-worker-deployment.yaml
+# 7. KEDA, then the worker and its ScaledObject
+kubectl apply --server-side -f keda/keda-2.21.0.yaml
+kubectl apply -f 40-worker-deployment.yaml -f 41-worker-scaledobject.yaml
 
 # 8. Frontend image. The ingress origin is baked in at build time
 docker build --platform linux/arm64 \
@@ -230,7 +235,7 @@ kubectl create configmap casetally-postgres-init \
 # then re-add the header comment
 ```
 
-**Images are pinned by digest, not by tag.** `pg16`, `7-alpine` and `v1.37.0`
+**Images are pinned by digest, not by tag.** `pg16`, `7-alpine` and `v1.36.4`
 all move when upstream re-pushes them. A digest does not.
 
 **Probes use TCP, not the unix socket.** The Postgres entrypoint runs
@@ -540,28 +545,127 @@ redis-sampled sum = 2900      <- undercounts by 100, as expected
 `verify` drops the backup table on success. On failure it keeps the table so
 you can inspect it, and `restore` puts the original embeddings back.
 
+## Worker autoscaling (KEDA)
+
+KEDA 2.21.0, vendored at `keda/keda-2.21.0.yaml` with all three images pinned by
+digest. `up.sh` installs it before the application manifests, because
+`41-worker-scaledobject.yaml` needs the ScaledObject CRD to exist.
+
+| | |
+| --- | --- |
+| trigger | `postgresql`, counting the worker's own queue predicate |
+| range | `minReplicaCount: 0`, `maxReplicaCount: 3` |
+| target | `targetQueryValue: 1000` rows per replica |
+| activation | `activationTargetQueryValue: 0`, so one waiting row wakes the tier |
+| poll | `pollingInterval: 10` |
+| cooldown | `cooldownPeriod: 60`, plus `scaleDown.stabilizationWindowSeconds: 30` |
+
+**Why queue depth and not CPU.** The worker is a poller: it sleeps, wakes, asks
+Postgres for rows, and sleeps again. Its CPU looks the same whether 0 rows are
+waiting or 80,000, because what bounds it is how much work exists. A CPU trigger
+would only react after a worker was already saturated. Queue depth is the actual
+demand and it is known before any work starts.
+
+**The host must be fully qualified.** `host: casetally-postgres` leaves the
+ScaledObject `Ready=False` with `hostname resolving error: lookup
+casetally-postgres ... no such host`, which reads like a database fault and is
+really DNS scope: the query is run by the KEDA operator, which lives in the
+`keda` namespace, and a bare Service name only resolves inside its own namespace.
+
+**Auth adds no new credentials.** The `TriggerAuthentication` takes the password
+from the existing `casetally-secrets` and the user and database names from the
+existing `casetally-config`, via `configMapTargetRef`, so the scaler cannot drift
+from what the API and worker connect as.
+
+**The Deployment declares no `replicas`.** KEDA owns that number. Leaving it in
+the manifest means every `kubectl apply` resets it and KEDA moves it back, so the
+two fight and the apply looks like it did nothing.
+
+### The scaler query, and the index behind it
+
+The trigger counts the worker's claim predicate verbatim:
+
+```sql
+SELECT count(*) FROM legal_chunks
+WHERE embedding IS NULL AND is_current = TRUE AND retry_count < 3
+```
+
+Unindexed, that is a parallel sequential scan of all 83,706 rows: 17ms warm
+across 17,408 buffers. Cheap once, not cheap every ten seconds forever, and it
+spends two parallel workers each time competing with live search. `init.sql` now
+creates a partial index on exactly that predicate, which takes the same query to
+**0.037ms over 1 buffer** as an index-only scan. The index is 8 KB when the queue
+is empty, because a partial index only covers the rows that match.
+
+### Memory
+
+Upstream ships each KEDA component at limits 1000m/1000Mi. Measured working set
+idle is 31 MiB (operator), 28 MiB (metrics apiserver) and 10 MiB (admission): 69
+MiB against 3,000 MiB declared. On a node with 7,934 MiB allocatable, where the
+stack already declared 89% in limits, that took the total to 105%.
+
+`keda/keda-resource-limits.yaml` trims the memory limits to 192Mi and requests to
+64Mi, as a JSON patch applied by `up.sh`. The vendored manifest is left untouched
+so it stays diffable against the upstream release. Declared memory limits are now
+**74% of allocatable**, and scale-to-zero returns the 712 MiB two idle workers
+used to hold.
+
+### Accounting across scale-downs
+
+`demo-worker.sh verify` sums committed rows per pod from a Redis hash,
+`worker:embedding:committed`, which the worker `HINCRBY`s after each commit
+returns. It has no TTL and `cleanup()` does not delete it.
+
+That exists because autoscaling broke the previous approach. The tally used to
+read each worker's log, which is the one source that cannot overcount, since a
+line is written only after the commit returns. Pods KEDA scales away take their
+logs with them, so a 3,000 row drain could only account for 1,500. The work was
+never lost; the evidence was.
+
+Two caveats to know before demoing: Redis has no persistence and uses a
+`Recreate` strategy, so a Redis restart mid-run resets the tally to zero without
+any row being lost; and the counter is cumulative, so `demo-worker.sh backlog`
+resets it. The row-level checks against the backup table are the authority either
+way.
+
+---
+
 ## Ingestion Job
 
 One-shot re-ingestion of the US Code from the source HTML. It is idempotent: a
 run against an already-ingested corpus writes nothing.
 
+**Pause worker autoscaling first.** This is now required, not an optimisation.
+Ingestion inserts chunks with `embedding IS NULL`, which is exactly the queue
+KEDA scales on, so an unpaused run has the autoscaler racing the Job: the queue
+climbs into the tens of thousands, KEDA takes the workers to 3, and three 900Mi
+workers plus a 2Gi Job ceiling overcommit a 7.9Gi VM while the Job is still
+writing.
+
 ```bash
+# 1. pin the worker tier at zero for the duration
+kubectl annotate scaledobject casetally-worker -n casetally \
+  autoscaling.keda.sh/paused-replicas=0 --overwrite
+
+# 2. run the Job
 kubectl delete job casetally-ingestion -n casetally --ignore-not-found
 kubectl apply -f 50-ingestion-job.yaml
 kubectl logs -f -n casetally -l app.kubernetes.io/name=ingestion
+
+# 3. hand the queue back to KEDA, which scales up on its next poll
+kubectl annotate scaledobject casetally-worker -n casetally \
+  autoscaling.keda.sh/paused-replicas-
 ```
 
-Scale the workers down first if memory is tight. The Job asks for a 2Gi ceiling
-and three workers hold 2700Mi of theirs, which together overcommit the VM:
+`paused-replicas=0` rather than `kubectl scale`, because the Deployment no longer
+declares a replica count: KEDA owns it, and a manual scale would be reverted on
+KEDA's next poll ten seconds later. The annotation tells KEDA itself to hold a
+fixed number, which is the only instruction it will respect. Note the trailing
+dash in step 3, which is how kubectl removes an annotation.
 
-```bash
-kubectl scale deployment/casetally-worker -n casetally --replicas=0
-# ... run the Job ...
-kubectl scale deployment/casetally-worker -n casetally --replicas=3
-```
-
-That is safe because the embedding queue is `embedding IS NULL` in Postgres, so
-scaling to zero parks the work rather than losing it.
+Parking the queue is safe because the queue *is* `embedding IS NULL` in Postgres.
+Nothing is lost by having no workers; the rows simply wait, and the first thing
+KEDA does when unpaused is notice them.
 
 ### Why the paths work without any code change
 

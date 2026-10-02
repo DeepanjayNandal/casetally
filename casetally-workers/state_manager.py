@@ -56,7 +56,20 @@ class StateManager:
         self.state_key = f"worker:embedding:{worker_id}:state"
         self.metrics_key = f"worker:embedding:{worker_id}:metrics"
         self.heartbeat_key = f"worker:embedding:{worker_id}:heartbeat"
-        
+
+        # Durable per-pod tally of COMMITTED rows.
+        #
+        # One hash for the whole tier, one field per pod, and deliberately no
+        # TTL: every other key here expires or is deleted on shutdown, which is
+        # correct for liveness state and useless for accounting. The three keys
+        # above all vanish when a pod exits, so once the worker tier began
+        # autoscaling, the rows a scaled-away pod had committed became
+        # unattributable: a 3,000 row drain could only account for 1,500.
+        #
+        # A hash rather than a key per pod so a reader gets the whole tier in one
+        # HGETALL, and so resetting between demo runs is a single DEL.
+        self.committed_key = "worker:embedding:committed"
+
         self.ttl = 300  # 5 minutes
         
         logger.info(f"StateManager initialized for worker: {worker_id}")
@@ -117,14 +130,44 @@ class StateManager:
         self.metrics.last_processed_at = datetime.utcnow()
         self.publish_metrics()
     
+    def record_committed(self, count: int):
+        """Add `count` to this pod's durable committed tally.
+
+        Call this ONLY after the database commit has returned, so the counter
+        can never claim more than is on disk.
+
+        Failures here are swallowed on purpose. This is bookkeeping for a human
+        reading a demo, not part of the work: if Redis is unreachable the rows
+        are already committed and nothing should be retried, rolled back or
+        failed on account of a counter. The worst case is an undercount, which
+        is why the row-level checks against the database remain the authority.
+        """
+        if count <= 0:
+            return
+        try:
+            self.redis.hincrby(self.committed_key, self.worker_id, count)
+        except Exception as e:
+            logger.warning(
+                "Could not record %d committed rows for %s: %s. "
+                "The rows are committed; only the tally is short.",
+                count, self.worker_id, e,
+            )
+
     def record_error(self, error: str):
         """Record an error"""
         self.metrics.total_errors += 1
         self.metrics.last_error = error
         self.publish_metrics()
-    
+
     def cleanup(self):
-        """Clean up Redis keys on shutdown"""
+        """Clean up Redis keys on shutdown.
+
+        committed_key is deliberately NOT deleted here. It is the only key that
+        has to outlive the pod: deleting it on a graceful exit is exactly how
+        the accounting lost track of workers that KEDA scaled away. It is reset
+        by demo-worker.sh when a new backlog is created, which is the only
+        moment at which the old totals stop being meaningful.
+        """
         try:
             self.redis.delete(self.state_key)
             self.redis.delete(self.metrics_key)

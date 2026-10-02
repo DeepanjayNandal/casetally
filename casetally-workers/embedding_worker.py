@@ -209,6 +209,10 @@ class EmbeddingWorker:
             finally:
                 session.close()
 
+        # Same rule as the batch path: recorded after the commits, and the count
+        # is only the chunks that actually committed.
+        self.state_manager.record_committed(succeeded)
+
         self._record_failures(failed)
         logger.info(f"Per-chunk retry: {succeeded} succeeded, {len(failed)} failed")
         return succeeded
@@ -260,7 +264,11 @@ class EmbeddingWorker:
             # Update database
             self._update_embeddings(session, chunk_ids, embeddings)
             session.commit()
-            
+
+            # After the commit returns, never before: the tally must not be able
+            # to claim rows that are not on disk.
+            self.state_manager.record_committed(len(chunks))
+
             # Record success
             self.state_manager.record_batch_processed(len(chunks))
             

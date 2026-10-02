@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -31,6 +32,25 @@ logger = logging.getLogger(__name__)
 # branch a smaller constant is the right scale. Env-overridable so it can be swept
 # against the eval harness without a rebuild.
 RRF_K = int(os.getenv("RRF_K", "20"))
+
+
+def normalize_citation(citation: str) -> str:
+    """Collapse the punctuation variants of one citation into a single key.
+
+    The corpus stores the same statute under more than one citation string: 928
+    statutes are split across a dotted and an undotted spelling, covering 9,910
+    chunks. "42 U.S.C. § 2000e" holds 38 chunks and "42 U.S.C. § 2000e." holds a
+    further 4, and the Pregnancy Discrimination Act text lives only in the second
+    one. Anything that groups or compares chunks by citation therefore has to
+    normalise first, or the two spellings count as two different statutes: the
+    per-citation cap allows two chunks from each instead of two overall, the
+    sources panel lists one statute twice, and the citation guard can treat a
+    correctly cited section as unsupplied.
+
+    This is a read-side repair. The real fix belongs in ingestion, which should
+    not have minted two citation strings for one section in the first place.
+    """
+    return re.sub(r"[.\s]+$", "", (citation or "").strip())
 
 
 @dataclass
@@ -90,16 +110,27 @@ class QueryEmbeddingService:
         return True
 
     def embed(self, query: str) -> Optional[List[float]]:
+        vecs = self.embed_many([query])
+        return vecs[0] if vecs else None
+
+    def embed_many(self, queries: List[str]) -> List[Optional[List[float]]]:
+        """Encode several queries in one call.
+
+        Multi-query retrieval needs 3-4 embeddings per request. Encoding them in
+        one batch rather than one at a time keeps it to a single forward pass, and
+        avoids running concurrent encodes on a model that is shared across threads
+        and pinned to one OMP thread.
+        """
         model = self._get_model()
-        if model is None:
-            return None
-        vec = model.encode(
-            [query],
+        if model is None or not queries:
+            return [None] * len(queries)
+        vecs = model.encode(
+            queries,
             show_progress_bar=False,
             convert_to_numpy=True,
             normalize_embeddings=True,
-        )[0]
-        return vec.astype(np.float32).tolist()
+        )
+        return [v.astype(np.float32).tolist() for v in vecs]
 
 
 def _vector_literal(embedding: List[float]) -> str:
@@ -195,7 +226,13 @@ class HybridSearchService:
               AND search_vector @@ to_tsquery('english', :tsq)
               AND (:jurisdiction IS NULL OR jurisdiction = :jurisdiction)
               AND (:document_type IS NULL OR document_type = :document_type)
-            ORDER BY bm25_score DESC
+            -- id breaks ties. 30 of the 50 rows in a typical window share a
+            -- ts_rank_cd score, and without a tiebreaker Postgres may return
+            -- tied rows in any order, so which of them survives LIMIT is not
+            -- stable between executions or plans. That made identical
+            -- sub-queries score a target at rank 14 on one run and 15 on the
+            -- next, which is small but makes every measurement unreproducible.
+            ORDER BY bm25_score DESC, id
             LIMIT :limit
             """
         )
@@ -227,7 +264,8 @@ class HybridSearchService:
               AND embedding IS NOT NULL
               AND (:jurisdiction IS NULL OR jurisdiction = :jurisdiction)
               AND (:document_type IS NULL OR document_type = :document_type)
-            ORDER BY embedding <=> CAST(:query_vec AS vector)
+            -- Same reasoning as the lexical branch: id makes ties deterministic.
+            ORDER BY embedding <=> CAST(:query_vec AS vector), id
             LIMIT :limit
             """
         )
@@ -289,11 +327,15 @@ class HybridSearchService:
         weight_vector: float,
         jurisdiction: Optional[str] = None,
         document_type: Optional[str] = None,
+        embedding: Optional[List[float]] = None,
     ) -> Dict[str, Any]:
         started = time.perf_counter()
 
         bm25_rows = self._fetch_bm25(db, query, bm25_k, jurisdiction, document_type)
-        embedding = self.embedding_service.embed(query)
+        # Accepting a precomputed vector lets search_multi encode every sub-query
+        # in one batch instead of once per call.
+        if embedding is None:
+            embedding = self.embedding_service.embed(query)
         vector_rows: List[RetrievalRow] = []
         if embedding is not None:
             vector_rows = self._fetch_vector(db, embedding, vector_k, jurisdiction, document_type)
@@ -384,11 +426,15 @@ class HybridSearchService:
 
         results: List[Dict[str, Any]] = []
         for row in top:
-            title = row.citation
+            # Normalised for display, grouping and comparison; the raw string is
+            # kept because the artifact join is keyed on the exact DB value.
+            citation = normalize_citation(row.citation)
+            title = citation
             results.append(
                 {
                     "chunk_id": row.chunk_id,
-                    "citation": row.citation,
+                    "citation": citation,
+                    "citation_raw": row.citation,
                     "clause_id": row.clause_id,
                     "title": title,
                     "snippet": _snippet(row.text_content, query),
@@ -409,4 +455,137 @@ class HybridSearchService:
             "took_ms": took_ms,
             "embedding_used": embedding is not None,
             "results": results,
+        }
+
+    def search_multi(
+        self,
+        session_factory,
+        queries: List[str],
+        top_k: int,
+        bm25_k: int,
+        vector_k: int,
+        weight_bm25: float,
+        weight_vector: float,
+        per_query_k: int = 20,
+        jurisdiction: Optional[str] = None,
+        document_type: Optional[str] = None,
+        labels: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Retrieve for several sub-queries and fuse the results.
+
+        One rewrite collapses a question into a single bag of terms, so one
+        ranking has to cover every legal issue the question raises. "Can my boss
+        fire me" spans discrimination, union activity and medical leave, each in a
+        different statute and a different title; terms that surface one push the
+        others down. Retrieving per issue and fusing afterwards lets each issue
+        compete on its own terms.
+
+        Fusion is RRF over the per-sub-query result lists, with the same k as the
+        within-query fusion. Each sub-query gets equal weight: there is no signal
+        saying which issue the user cared about most, so weighting one would be
+        inventing one. A chunk that several sub-queries agree on accumulates
+        contributions and rises, which is the behaviour wanted when a question has
+        one dominant issue.
+
+        Searches run concurrently, each on its own session, because they are
+        independent and sequential execution would multiply latency by the number
+        of sub-queries. Embeddings are computed in a single batch beforehand so
+        the shared model is never entered from several threads at once.
+        """
+        started = time.perf_counter()
+        keep = [i for i, q in enumerate(queries) if q and q.strip()]
+        labels = labels or [str(i) for i in range(len(queries))]
+        queries = [queries[i] for i in keep]
+        labels = [labels[i] if i < len(labels) else str(i) for i in keep]
+        if not queries:
+            return {"query": "", "total": 0, "took_ms": 0, "embedding_used": False,
+                    "results": [], "sub_queries": [], "by_issue": {}}
+
+        embeddings = self.embedding_service.embed_many(queries)
+
+        def run(idx: int) -> List[Dict[str, Any]]:
+            db = session_factory()
+            try:
+                return self.search(
+                    db=db,
+                    query=queries[idx],
+                    top_k=per_query_k,
+                    bm25_k=bm25_k,
+                    vector_k=vector_k,
+                    weight_bm25=weight_bm25,
+                    weight_vector=weight_vector,
+                    jurisdiction=jurisdiction,
+                    document_type=document_type,
+                    embedding=embeddings[idx],
+                )["results"]
+            finally:
+                db.close()
+
+        per_query: List[List[Dict[str, Any]]] = [[] for _ in queries]
+        errors: List[str] = []
+        with ThreadPoolExecutor(max_workers=min(len(queries), 4)) as pool:
+            futures = {pool.submit(run, i): i for i in range(len(queries))}
+            for fut in as_completed(futures):
+                i = futures[fut]
+                try:
+                    per_query[i] = fut.result()
+                except Exception as exc:
+                    # One sub-query failing should not lose the others, but it
+                    # must not vanish either. Swallowing these made a database
+                    # outage look identical to a question with no results: every
+                    # sub-query failed, the fused list came back empty, and the
+                    # endpoint returned 200 with no answer and no error.
+                    #
+                    # exc_info because the message alone rarely identifies the
+                    # cause, and the caller gets the count so it can tell
+                    # "retrieval broke" from "nothing matched".
+                    logger.warning(
+                        "sub-query %d (%r) failed: %s", i, queries[i], exc, exc_info=True
+                    )
+                    errors.append(f"{type(exc).__name__}: {exc}")
+
+        fused: Dict[int, float] = {}
+        best: Dict[int, Dict[str, Any]] = {}
+        contributors: Dict[int, int] = {}
+        for rows in per_query:
+            for rank, row in enumerate(rows, 1):
+                cid = row["chunk_id"]
+                fused[cid] = fused.get(cid, 0.0) + 1.0 / (RRF_K + rank)
+                contributors[cid] = contributors.get(cid, 0) + 1
+                if cid not in best:
+                    best[cid] = row
+
+        order = sorted(fused, key=lambda c: fused[c], reverse=True)[:top_k]
+        results = []
+        for cid in order:
+            row = dict(best[cid])
+            row["hybrid_score"] = round(fused[cid] / fused[order[0]], 6) if fused[order[0]] else 0.0
+            # How many sub-queries found this chunk. Useful for reading a result
+            # set: a chunk every sub-query agrees on is a different kind of hit
+            # from one only a single issue surfaced.
+            row["matched_sub_queries"] = contributors[cid]
+            results.append(row)
+
+        # Also hand back each issue's own ranking. The fused list answers "what is
+        # most relevant overall", which is the wrong question when the caller needs
+        # to guarantee every issue is represented: fusion can legitimately rank one
+        # issue's chunks above every chunk of another. Keeping the per-issue lists
+        # lets the caller fill its context fairly instead of taking the head of a
+        # list that may be dominated by one issue.
+        by_issue = {labels[i]: per_query[i] for i in range(len(queries))}
+
+        took_ms = int((time.perf_counter() - started) * 1000)
+        return {
+            "query": " | ".join(queries),
+            "total": len(results),
+            "took_ms": took_ms,
+            "embedding_used": any(e is not None for e in embeddings),
+            "results": results,
+            "sub_queries": queries,
+            "issues": labels,
+            "by_issue": by_issue,
+            # How many sub-queries failed, and how many ran at all. The caller
+            # needs both to tell a retrieval outage from a genuine no-match.
+            "errors": errors,
+            "n_queries": len(queries),
         }

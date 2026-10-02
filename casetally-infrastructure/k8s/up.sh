@@ -198,12 +198,34 @@ phase "KEDA"
 #
 # The manifest is vendored at a pinned version rather than curl'd from a release
 # URL; see keda/keda-2.21.0.yaml for the version rationale.
-if kubectl get deployment keda-operator -n keda >/dev/null 2>&1; then
-  log "KEDA already installed, reapplying to stay in sync"
+# Apply the release manifest only when KEDA is absent or at a different version.
+#
+# Re-applying it unconditionally does not work, and the reason is worth keeping.
+# The vendored manifest declares resources.limits.memory 1000Mi, and the patch
+# below sets it to 192Mi under a different field manager. Server-side apply then
+# refuses on every subsequent run:
+#
+#   Apply failed with 2 conflicts: conflicts with "kubectl-patch"
+#   - containers[keda-operator].resources.limits.memory
+#
+# Two managers cannot own one field with different values, which is the same rule
+# that stops KEDA and this manifest both owning the worker's replica count.
+# --force-conflicts would "fix" it by reasserting 1000Mi on every run and then
+# patching it back, rolling all three KEDA pods each time for no reason.
+KEDA_VERSION="2.21.0"
+keda_have="$(kubectl get deployment keda-operator -n keda \
+              -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null \
+              | grep -oE ':[0-9]+\.[0-9]+\.[0-9]+' | head -1 | tr -d ':' || true)"
+if [[ "$keda_have" == "$KEDA_VERSION" ]]; then
+  log "KEDA $KEDA_VERSION already installed, not reapplying the release manifest"
 else
-  log "installing KEDA (pulls three images, usually the slow part)"
+  if [[ -n "$keda_have" ]]; then
+    log "upgrading KEDA $keda_have to $KEDA_VERSION"
+  else
+    log "installing KEDA $KEDA_VERSION (pulls three images, usually the slow part)"
+  fi
+  kubectl apply --server-side -f "${K8S_DIR}/keda/keda-2.21.0.yaml" >/dev/null
 fi
-kubectl apply --server-side -f "${K8S_DIR}/keda/keda-2.21.0.yaml" >/dev/null
 
 # Trim the memory limits to this cluster. The patch is indexed on container 0,
 # so assert there is exactly one container before trusting that index.

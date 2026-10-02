@@ -138,10 +138,19 @@ class BaseIngestor(ABC):
             logger.debug(f"Inserted chunk: {clause_id} (ID: {chunk_id})")
             return {'id': chunk_id, 'created': 1, 'updated': 0, 'unchanged': 0}
 
+        # Re-ingesting the same source must change nothing, so the row is only
+        # written when something actually differs. Three separate questions, and
+        # they are kept apart because they have different consequences.
+        #
+        # Text changed means the law itself changed, so the embedding is now
+        # wrong and gets reset to NULL. That is what puts the row back on the
+        # worker's queue.
         text_changed = (
             existing['text_content'] != text_content
             or existing['version_hash'] != version_hash
         )
+        # Metadata changed means labels moved but the text did not. Worth an
+        # UPDATE, not worth re-embedding: the vector still describes this text.
         metadata_changed = (
             existing['citation'] != citation
             or existing['jurisdiction'] != jurisdiction
@@ -159,6 +168,10 @@ class BaseIngestor(ABC):
         if not text_changed and not metadata_changed and not reactivating:
             return {'id': existing['id'], 'created': 0, 'updated': 0, 'unchanged': 1}
 
+        # One UPDATE covers all three cases. is_current is set unconditionally
+        # so a reactivated row comes back, and the embedding is cleared only when
+        # the text moved, which is why reset_embedding is text_changed and not
+        # the whole condition above.
         update_sql = text("""
             UPDATE legal_chunks
             SET citation = :citation,
@@ -250,7 +263,15 @@ class BaseIngestor(ABC):
         return {'id': existing['id'], 'created': 0, 'updated': 1, 'unchanged': 0}
 
     def deactivate_stale_chunks(self, citation: str, active_clause_ids: List[str]) -> int:
-        """Mark chunks not present in the latest ingestion for a citation as non-current."""
+        """Retire chunks of this citation that the source no longer contains.
+
+        Nothing is deleted. Superseded text keeps is_current = FALSE so the old
+        wording of a law can still be read back, and search filters on
+        is_current rather than on the row existing.
+
+        Call this once per citation per run, from finalize_deactivation, never
+        per document. See the note there.
+        """
         if active_clause_ids:
             sql = text("""
                 UPDATE legal_chunks

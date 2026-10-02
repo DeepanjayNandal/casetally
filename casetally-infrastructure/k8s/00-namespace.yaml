@@ -1,3 +1,6 @@
+# Everything the app owns lives in this one namespace, so `kubectl delete
+# namespace casetally` is a complete teardown and nothing is left behind in
+# default. KEDA is the exception: it installs into its own `keda` namespace.
 apiVersion: v1
 kind: Namespace
 metadata:

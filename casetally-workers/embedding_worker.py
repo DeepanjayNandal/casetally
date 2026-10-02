@@ -139,7 +139,12 @@ class EmbeddingWorker:
     
     def _get_pending_chunks(self, session: Session, limit: int) -> List[Tuple[int, str]]:
         """
-        Fetch chunks that need embeddings using ORM.
+        Claim the next batch of chunks that still need an embedding.
+
+        There is no queue service here. The queue IS the table: a row with
+        embedding IS NULL is work that has not been done, so the queue cannot
+        drift out of sync with the data it describes, and nothing is lost if
+        every worker dies at once.
 
         Rows are claimed with FOR UPDATE SKIP LOCKED so that concurrent workers
         take disjoint batches. Without it every worker orders by the same id and
@@ -223,7 +228,11 @@ class EmbeddingWorker:
         chunk_ids: List[int],
         embeddings: List[List[float]]
     ):
-        """Bulk-update embeddings with a single executemany call — no per-row SELECT."""
+        """Write a whole batch of vectors with one executemany call.
+
+        This used to be a SELECT plus an UPDATE per row. At batch size 100 that
+        is 200 round trips where one will do.
+        """
         params = [
             {"id": chunk_id, "emb": "[" + ",".join(f"{v:.8f}" for v in emb) + "]"}
             for chunk_id, emb in zip(chunk_ids, embeddings)

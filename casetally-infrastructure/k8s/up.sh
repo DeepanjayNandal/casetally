@@ -22,7 +22,7 @@ NS="casetally"
 
 # Tags are pinned here rather than read from the manifests, so there is exactly
 # one place to bump a version and the manifests stay declarative.
-IMG_BACKEND="casetally-backend:1.1.3"
+IMG_BACKEND="casetally-backend:1.2.3"
 IMG_WORKER="casetally-worker:0.3.1"
 IMG_FRONTEND="casetally-frontend:1.1.0"
 

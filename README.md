@@ -93,7 +93,7 @@ Browser
 ### `casetally-backend` — FastAPI (port 3001)
 
 - `POST /v1/chat/stream` — query rewrite → hybrid search → SSE-streamed LLM answer
-- `POST /v1/search` — hybrid search only, p50 97ms retrieval across 83k+ chunks (see Evaluation for how measured)
+- `POST /v1/search` — hybrid search only, p50 27ms retrieval across 83k+ chunks (see Evaluation for how measured)
 - `POST /v1/rewrite` — exposes query rewriting as a standalone endpoint
 - `GET /health/ready` — liveness + real DB ping
 - Query rewriting via `GroqService.rewrite_query()` before every retrieval
@@ -188,31 +188,37 @@ Two modes: raw hybrid search, and hybrid search with LLM query rewriting (the ac
 
 | Metric | Without rewriting | With rewriting |
 | --- | --- | --- |
-| Mean Precision@3 | 0.76 | 0.76 |
-| Mean Recall@5 | 0.81 | 0.77 |
-| Mean MRR | 0.85 | 0.82 |
-| p50 latency | 97ms | 367ms (incl. rewrite call) |
-| p95 latency | 574ms | 664ms |
+| Mean Precision@3 | 0.78 | 0.73 |
+| Mean Recall@5 | 0.83 | 0.79 |
+| Mean MRR | 0.85 | 0.88 |
+| p50 latency | 27ms | 72ms (incl. rewrite call) |
+| p95 latency | 122ms | 160ms |
 
 **How these were measured.** `scripts/eval_retrieval.py` against the Kubernetes deployment,
 through a `kubectl port-forward` to the API Service, with the embedding model warm and all 53
 titles ingested. Latency is the server-reported `took_ms`, so it covers retrieval and fusion but
 not the port-forward hop. Without rewriting the numbers are deterministic and reproduce exactly.
-With rewriting they do not: the rewrite is a live LLM call, so the core means hold at
-0.76 / 0.77 / 0.82 across runs while individual queries move.
+With rewriting they do not: the rewrite is a live LLM call, so the core means hold at roughly
+0.73 / 0.79 / 0.88 across runs while individual queries move.
 
-**Latency is much higher than it used to be, and the cause is known.** An earlier version of this
-table reported p50 18ms. Two things changed. The lexical branch now ORs query terms instead of
-ANDing them, which grows the candidate pool into the tens of thousands, and `LIMIT` bounds what is
-returned rather than what is scanned. And these numbers come from the Kubernetes deployment rather
-than from Docker Compose on the host. The trade bought Precision@3 0.64 to 0.76 and MRR 0.69 to
-0.85 without rewriting; sub-second retrieval is an acceptable price, but it is a real regression
-and not a measurement artefact.
+**Latency was once much worse, and the causes were specific.** An intermediate version of this
+table reported p50 97ms and p95 574ms, against p50 18ms for the original AND-semantics lexical
+branch. Moving that branch to OR semantics grew the candidate pool into the tens of thousands,
+because `LIMIT` bounds what is returned rather than what is scanned, and that bought Precision@3
+0.64 to 0.78 and MRR 0.69 to 0.85. Profiling then found most of the remaining cost was not
+inherent: an `ORDER BY distance, id` tiebreaker on the vector branch made the ordering
+unsatisfiable by the HNSW index, so every vector search sequentially scanned all 83,706 rows;
+`hnsw.ef_search` was below the number of rows requested, so the branch silently returned 40 of 50;
+`shared_buffers` was at its 128MB default against a 664MB database, leaving the table cache hit
+ratio at 72.9%; and torch sized its thread pool from the host CPU count rather than the container
+limit. With those corrected, retrieval is back to sub-50ms p50 while keeping the recall that OR
+semantics bought.
 
-**Query rewriting is no longer the clear trade-off it was.** It used to cost Precision@3 and
-Recall@5 to buy MRR. After the rewrite prompt was changed to produce statutory wording, the two
-modes are close on the core group, and rewriting is what makes the colloquial employment group work
-at all: it is the difference between a mean MRR of 0.38 and roughly 0.71 to 1.00 there.
+**Query rewriting is still a trade-off, and it is worth taking.** On the core group it costs
+Precision@3 0.78 to 0.73 and Recall@5 0.83 to 0.79 while raising MRR 0.85 to 0.88: the right
+statute ranks higher, and the rest of the top-5 window gets noisier. For a tool that shows one
+answer, MRR is the metric that matters. Rewriting is also what makes the colloquial employment
+group work at all, where it is the difference between a mean MRR of 0.38 and 0.88.
 
 ### Results (employment group, 4 queries)
 

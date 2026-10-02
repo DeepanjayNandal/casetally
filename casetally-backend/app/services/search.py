@@ -245,32 +245,22 @@ class HybridSearchService:
             logger.debug("lexical: dropped common lexemes %s, kept %s", dropped, kept)
             lexemes = kept
 
-        # Any term may match, and ts_rank_cd decides what is actually relevant.
+        # OR the terms together rather than requiring all of them.
         #
-        # ANDing every term, which plainto_tsquery does, requires all of them in
-        # one 512-word chunk. That constraint gets harder the better the query is:
-        # on this corpus "freedom of speech First Amendment" matched 2 chunks and
-        # the more precise "Congress shall make no law abridge freedom of speech"
-        # matched 0, and every multi-term rewrite of "can my boss fire me" matched
-        # 0. When this branch returns nothing, hybrid search silently becomes
-        # vector-only.
+        # plainto_tsquery ANDs every term, which means one 512-word chunk has to
+        # contain all of them. That gets harder the better the query is: "freedom
+        # of speech First Amendment" matched 2 chunks, and every multi-term
+        # rewrite of "can my boss fire me" matched 0. When this branch returns
+        # nothing, hybrid search silently becomes vector-only.
         #
-        # A minimum-match requirement was the obvious guard against OR becoming
-        # noise, and it was measured and rejected. Requiring any two lexemes to
-        # co-occur shrank the candidate pool 7x as intended, but it made retrieval
-        # worse, not better: on the same fixed query strings, Title VII's lexical
-        # rank went from 4 under plain OR to 402 under min-2, and ADEA from 19 to
-        # 2339. The reason is that requiring two terms rewards chunks containing
-        # two COMMON words together, which in this corpus means pension and plan
-        # documents carrying both "employment" and "termination", while
-        # structurally excluding the chunk that matches one rare, highly
-        # discriminating term very strongly. ts_rank_cd already weights by cover
-        # density, so it handles that judgement better than a match-count filter
-        # does.
+        # A minimum-match rule was the obvious guard against OR becoming noise,
+        # and it was measured and rejected: requiring any two terms to co-occur
+        # pushed Title VII from lexical rank 4 to 402, because two common words
+        # together beat one rare decisive one. ts_rank_cd already weighs rarity
+        # and proximity, so it makes that judgement better than a count does.
         #
-        # The cost is latency: pool sizes grow into the tens of thousands and p50
-        # went from roughly 45ms to a few hundred. The LIMIT bounds what is
-        # returned, not what is scanned.
+        # The cost is scan size, which is what the common-term filter above and
+        # the partial index exist to contain.
         tsq = "|".join(lexemes)
 
         sql = text(
@@ -474,32 +464,21 @@ class HybridSearchService:
             else:
                 by_id[row.chunk_id] = row
 
-        # Reciprocal rank fusion, replacing min-max normalised score averaging.
+        # Reciprocal rank fusion: score each chunk by 1/(k + rank) in each branch
+        # and add the two.
         #
-        # The old scheme normalised each branch to 0..1 across the merged set and
-        # averaged them, which meant a chunk missing from one branch was scored 0
-        # for it and could not exceed half the maximum however strong the other
-        # branch was. That is the wrong penalty when the branches disagree about
-        # whether something exists at all rather than about where it ranks: the
-        # lexical branch returns 50 rows and the vector branch returns a different
-        # 50, so most items are absent from one of them by construction. For
-        # "can my boss fire me" Title VII tied for the top lexical score and was
-        # absent from the vector top 50, which capped it at 0.41 and put it at
-        # fused rank 13 behind pension sections that scored on both.
+        # The branches return scores that are not comparable: ts_rank_cd cover
+        # density and cosine similarity are different quantities on different
+        # scales. The previous scheme normalised each branch to 0..1 and averaged,
+        # which punished absence: each branch returns only 50 rows out of 83,706,
+        # so most chunks are missing from one of them simply because the list was
+        # cut off, not because they are irrelevant. Title VII tied for the top
+        # lexical score, was absent from the vector top 50, and that capped it at
+        # 0.41 and pushed it to fused rank 13.
         #
-        # RRF uses position rather than magnitude, so the two branches do not need
-        # a shared scale: ts_rank_cd values and cosine similarities are not
-        # comparable quantities and normalising them only hid that. Absence
-        # contributes nothing instead of contributing a zero that drags an average
-        # down.
-        #
-        # k dampens how much the very top ranks dominate. 60 is the value from the
-        # original RRF paper. Note it is large relative to a 50-row pool, so it
-        # compresses the score range: with k=60 rank 1 scores 1/61 and rank 50
-        # scores 1/110, under a 2x spread. A smaller k discriminates more sharply.
-        #
-        # weight_bm25 and weight_vector still mean relative branch influence, so
-        # callers passing 0.5/0.5, or 1/0 to isolate a branch, behave as before.
+        # Using position instead of magnitude removes the need for a shared scale,
+        # and a missing chunk contributes nothing rather than dragging an average
+        # down. k damps how much the very top ranks dominate; see RRF_K.
         bm25_rank = {row.chunk_id: i + 1 for i, row in enumerate(bm25_rows)}
         vector_rank = {row.chunk_id: i + 1 for i, row in enumerate(vector_rows)}
 

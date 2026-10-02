@@ -10,10 +10,14 @@ import { SampleQueryChip } from "@/components/sample-query-chip"
 import { HowItWorks } from "@/components/how-it-works"
 import { StatsBar } from "@/components/stats-bar"
 
+// The three questions the system answers most reliably, verified by running each
+// one through the full chat endpoint. Picked over more impressive-sounding
+// prompts because a homepage chip that returns a weak answer is worse than a
+// narrow one that returns a good one.
 const SAMPLE_QUERIES = [
-  "Patent eligibility requirements",
-  "First Amendment protections",
-  "Business compliance rules",
+  "A debt collector keeps calling me late at night",
+  "Can I be fired for my age?",
+  "Can I buy a gun with a felony conviction?",
 ]
 
 export default function HomePage() {
@@ -104,8 +108,8 @@ export default function HomePage() {
             lineHeight: 1.6,
           }}
         >
-          Ask any legal question across statutes, codes, and regulations. Get
-          clear answers grounded in real citations.
+          Ask any legal question about the U.S. Code. Get clear answers grounded
+          in real citations.
         </p>
 
         {/* Search bar + hint */}

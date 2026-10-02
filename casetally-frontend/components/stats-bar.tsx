@@ -2,7 +2,7 @@ const STATS = [
   { label: "U.S. Code titles", value: "53" },
   { label: "Sections indexed", value: "47,207" },
   { label: "Search", value: "Hybrid full-text + vector" },
-  { label: "Response time", value: "Sub-second" },
+  { label: "Median search latency", value: "45ms" },
 ]
 
 export function StatsBar() {

@@ -198,7 +198,7 @@ export function ChatInterface({ className }: ChatInterfaceProps) {
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="Ask about legal codes, regulations, or case law..."
+                placeholder="Ask a question about the U.S. Code..."
                 className="w-full rounded-xl border border-glass-border bg-background/50 py-4 pl-4 pr-24 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                 disabled={isLoading}
               />

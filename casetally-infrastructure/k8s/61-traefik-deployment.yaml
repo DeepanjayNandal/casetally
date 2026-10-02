@@ -152,19 +152,23 @@ spec:
             failureThreshold: 3
 
           resources:
-            # Traefik is a proxy: it holds connections, not data. Measured
-            # memory.peak was 41 MiB while routing the app, its static assets
-            # and SSE streams.
+            # Traefik is a proxy: it holds connections, not data. An early
+            # measurement put memory.peak at 41 MiB, and 128Mi was set as ~3x
+            # that.
             #
-            # 128Mi is ~3x that. Kept lower than it could be because this pod is
-            # the one thing every request passes through, so it should be the
-            # cheapest thing in the namespace, not a contributor to pressure.
+            # That measurement was taken too early. In steady state this pod sits
+            # at 127 MiB against a 128 MiB ceiling, with memory.events recording
+            # 144 reclaim events and zero headroom: the kernel was continuously
+            # reclaiming to keep it under the limit. It had not been OOM killed
+            # yet, but it is the single thing every request passes through, so it
+            # is the worst pod in the namespace to leave one allocation away from
+            # being killed. Raised to 256Mi, which the node has room for.
             requests:
               cpu: 100m
-              memory: 48Mi
+              memory: 96Mi
             limits:
               cpu: "1"
-              memory: 128Mi
+              memory: 256Mi
 
           securityContext:
             allowPrivilegeEscalation: false

@@ -127,6 +127,15 @@ function SearchResults() {
       const decoder = new TextDecoder()
       let buffer = ""
 
+      // The backend sends Server-Sent Events, so the body arrives as a stream of
+      // "data: {json}" lines. A chunk from the network can split a line in half,
+      // so whatever follows the last newline is held in `buffer` until the rest
+      // of it turns up.
+      //
+      // Five event types arrive, in this order: "sources" first so the panel can
+      // fill before any text, then many "text" events, then "citation_check",
+      // then "artifact", then the literal [DONE]. An "error" event can replace
+      // the text events at any point.
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -208,7 +217,7 @@ function SearchResults() {
   }, [])
 
   // Run search when initialQuery changes.
-  // Using a ref (not local var) to deduplicate StrictMode's double-invoke —
+  // Using a ref (not a local var) to deduplicate StrictMode's double invoke:
   // the ref persists across both invocations so the second one skips.
   const lastSearchedRef = useRef<string>("")
   useEffect(() => {
@@ -229,7 +238,7 @@ function SearchResults() {
     return () => window.removeEventListener("cite-click", handler)
   }, [])
 
-  // Follow-up — append to conversation, update URL without navigation
+  // Follow-up: append to the conversation and update the URL without navigating
   const handleFollowUp = (q: string) => {
     const trimmed = q.trim()
     if (!trimmed) return
@@ -277,7 +286,7 @@ function SearchResults() {
             alignItems: "start",
           }}
         >
-          {/* LEFT — Conversation turns */}
+          {/* LEFT: conversation turns */}
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "24px" }}>
               <Sparkles size={16} style={{ color: "hsl(var(--accent))" }} />
@@ -327,6 +336,10 @@ function SearchResults() {
                   ) : (
                     <>
                     <StreamingText text={turn.answer} isStreaming={turn.isStreaming} />
+                    {/* Shown when the backend's citation guard found the answer
+                        quoting a section that retrieval never supplied. A reader
+                        cannot tell an invented citation from a real one, so it
+                        has to be visible rather than only logged. */}
                     {turn.unverifiedCitations.length > 0 && (
                       <div
                         role="alert"
@@ -401,7 +414,7 @@ function SearchResults() {
             )}
           </div>
 
-          {/* RIGHT — Sources (always latest turn) */}
+          {/* RIGHT: sources for the latest turn */}
           <div className="sources-panel" style={{ position: "sticky", top: "80px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px" }}>
               <BookOpen size={16} style={{ color: "hsl(var(--accent))" }} />

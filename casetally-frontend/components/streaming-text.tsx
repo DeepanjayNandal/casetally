@@ -51,11 +51,11 @@ export function StreamingText({ text, isStreaming }: StreamingTextProps) {
           p: ({ children }) => (
             <p style={{ margin: "0 0 12px", lineHeight: 1.75, color: "hsl(var(--text-primary))" }}>{children}</p>
           ),
-          // Bold — section headings like **Short Answer**
+          // Bold: the answer's section headings, like **Short Answer**
           strong: ({ children }) => (
             <strong style={{ fontWeight: 600, color: "hsl(var(--text-primary))" }}>{children}</strong>
           ),
-          // Blockquote — Key Statutory Language
+          // Blockquote: the Key Statutory Language section, a verbatim quote
           blockquote: ({ children }) => (
             <blockquote style={{
               borderLeft: "3px solid hsl(var(--accent-muted))",
@@ -69,7 +69,7 @@ export function StreamingText({ text, isStreaming }: StreamingTextProps) {
               {children}
             </blockquote>
           ),
-          // Lists — Relevant Statutes
+          // Lists: the Relevant Statutes section, one citation per item
           ul: ({ children }) => (
             <ul style={{ paddingLeft: "20px", margin: "8px 0 12px", listStyleType: "disc" }}>{children}</ul>
           ),
@@ -87,6 +87,10 @@ export function StreamingText({ text, isStreaming }: StreamingTextProps) {
               }
               return ""
             }
+            // Turn "29 U.S.C. § 623: prohibits age discrimination" into a link
+            // to the official text on govinfo.gov, keeping the description after
+            // it as plain text. The separator class accepts a colon, which the
+            // answer format uses, as well as the dashes older answers used.
             const raw = extractText(children).trim()
             const match = raw.match(/^(\d+)\s+U\.S\.C\.\s+§\s+(\S+?)([\s:—\-–].+)?$/)
             if (match) {
@@ -104,7 +108,7 @@ export function StreamingText({ text, isStreaming }: StreamingTextProps) {
             }
             return <li style={{ margin: "4px 0", color: "hsl(var(--text-primary))" }}>{children}</li>
           },
-          // Inline code — legal citations like `18 U.S.C. § 2709`
+          // Inline code: a citation written inside backticks
           code: ({ children, className }) => {
             const isBlock = !!className
             if (isBlock) {
@@ -114,7 +118,7 @@ export function StreamingText({ text, isStreaming }: StreamingTextProps) {
                 </pre>
               )
             }
-            // Inline citation — clickable
+            // Inline citation, turned into a clickable link
             const text = String(children)
             return (
               <span
@@ -128,11 +132,11 @@ export function StreamingText({ text, isStreaming }: StreamingTextProps) {
               </span>
             )
           },
-          // Horizontal rule — section divider
+          // Horizontal rule: a divider between sections
           hr: () => (
             <hr style={{ border: "none", borderTop: "1px solid hsl(var(--border-subtle))", margin: "16px 0" }} />
           ),
-          // Links — pass through (statute links injected by li renderer above)
+          // Links pass straight through. Statute links are injected by the list renderer above
           a: ({ href, children }) => (
             <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: "hsl(var(--accent))", textDecoration: "underline", textUnderlineOffset: "3px" }}>
               {children}

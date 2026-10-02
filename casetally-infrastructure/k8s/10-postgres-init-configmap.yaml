@@ -26,6 +26,7 @@
 #
 # Runs ONLY when PGDATA is empty (that is how docker-entrypoint.sh works), so
 # it bootstraps a fresh PVC and is inert on every subsequent restart.
+
 apiVersion: v1
 data:
   init.sql: "-- =============================================================================\n--
@@ -100,10 +101,24 @@ data:
     INDEX IF NOT EXISTS idx_chunks_tags ON legal_chunks \n    USING gin(tags);\nCREATE
     INDEX IF NOT EXISTS idx_chunks_jurisdiction ON legal_chunks(jurisdiction);\nCREATE
     INDEX IF NOT EXISTS idx_chunks_document_type ON legal_chunks(document_type);\nCREATE
-    INDEX IF NOT EXISTS idx_chunks_current ON legal_chunks(is_current) \n    WHERE
-    is_current = TRUE;\nCREATE INDEX IF NOT EXISTS idx_chunks_version ON legal_chunks(version_hash);\n\n--
-    legal_artifacts indexes\nCREATE INDEX IF NOT EXISTS idx_artifacts_citation ON
-    legal_artifacts(citation);\nCREATE INDEX IF NOT EXISTS idx_artifacts_type ON legal_artifacts(artifact_type);\nCREATE
+    INDEX IF NOT EXISTS idx_chunks_current ON legal_chunks(is_current)\n    WHERE
+    is_current = TRUE;\n\n-- The embedding queue, as both the worker and the KEDA
+    scaler ask for it.\n--\n-- A partial index, because the rows it covers are the
+    ones that still need\n-- work: when the corpus is fully embedded it indexes nothing
+    and occupies a\n-- single page. Without it, \"how many chunks are waiting\" is
+    a parallel\n-- sequential scan of all 83,706 rows, measured at 17ms warm across
+    17,408\n-- buffers. That is cheap once and not cheap every ten seconds forever,
+    which is\n-- how often the autoscaler asks, and it spends two parallel workers
+    each time\n-- competing with live search queries. With the index the same question
+    is an\n-- index-only scan of an empty relation.\n--\n-- The predicate matches
+    the worker's claim query exactly (embedding_worker.py),\n-- so the same index
+    serves both the claim and the scaler. retry_count < 3 is\n-- MAX_EMBED_RETRIES;
+    a literal is required because a partial index predicate\n-- must be immutable.\nCREATE
+    INDEX IF NOT EXISTS idx_chunks_embed_queue ON legal_chunks (id)\n    WHERE embedding
+    IS NULL AND is_current = TRUE AND retry_count < 3;\nCREATE INDEX IF NOT EXISTS
+    idx_chunks_version ON legal_chunks(version_hash);\n\n-- legal_artifacts indexes\nCREATE
+    INDEX IF NOT EXISTS idx_artifacts_citation ON legal_artifacts(citation);\nCREATE
+    INDEX IF NOT EXISTS idx_artifacts_type ON legal_artifacts(artifact_type);\nCREATE
     INDEX IF NOT EXISTS idx_artifacts_primary ON legal_artifacts(is_primary) \n    WHERE
     is_primary = TRUE;\nCREATE INDEX IF NOT EXISTS idx_artifacts_version ON legal_artifacts(version_hash);\n\n--
     Other tables\nCREATE INDEX IF NOT EXISTS idx_search_queries_user_id ON search_queries(user_id);\nCREATE

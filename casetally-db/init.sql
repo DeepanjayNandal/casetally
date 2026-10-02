@@ -151,8 +151,26 @@ CREATE INDEX IF NOT EXISTS idx_chunks_tags ON legal_chunks
     USING gin(tags);
 CREATE INDEX IF NOT EXISTS idx_chunks_jurisdiction ON legal_chunks(jurisdiction);
 CREATE INDEX IF NOT EXISTS idx_chunks_document_type ON legal_chunks(document_type);
-CREATE INDEX IF NOT EXISTS idx_chunks_current ON legal_chunks(is_current) 
+CREATE INDEX IF NOT EXISTS idx_chunks_current ON legal_chunks(is_current)
     WHERE is_current = TRUE;
+
+-- The embedding queue, as both the worker and the KEDA scaler ask for it.
+--
+-- A partial index, because the rows it covers are the ones that still need
+-- work: when the corpus is fully embedded it indexes nothing and occupies a
+-- single page. Without it, "how many chunks are waiting" is a parallel
+-- sequential scan of all 83,706 rows, measured at 17ms warm across 17,408
+-- buffers. That is cheap once and not cheap every ten seconds forever, which is
+-- how often the autoscaler asks, and it spends two parallel workers each time
+-- competing with live search queries. With the index the same question is an
+-- index-only scan of an empty relation.
+--
+-- The predicate matches the worker's claim query exactly (embedding_worker.py),
+-- so the same index serves both the claim and the scaler. retry_count < 3 is
+-- MAX_EMBED_RETRIES; a literal is required because a partial index predicate
+-- must be immutable.
+CREATE INDEX IF NOT EXISTS idx_chunks_embed_queue ON legal_chunks (id)
+    WHERE embedding IS NULL AND is_current = TRUE AND retry_count < 3;
 CREATE INDEX IF NOT EXISTS idx_chunks_version ON legal_chunks(version_hash);
 
 -- legal_artifacts indexes

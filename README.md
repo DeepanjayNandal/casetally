@@ -22,7 +22,7 @@ termination. It is in the eval set as a failing regression test.
 
 ![CaseTally home page showing the search entry point, with 53 U.S. Code titles and 47,207 sections indexed](docs/images/homepage.png)
 
-Answering *"copyright infringement damages"* — the streamed answer cites 17 U.S.C. § 504 and quotes the statutory text verbatim, with the ten retrieved sections ranked alongside it.
+Answering *"copyright infringement damages"*, the streamed answer cites 17 U.S.C. § 504 and quotes the statutory text verbatim, with the ten retrieved sections ranked alongside it.
 
 ![CaseTally answer view, showing a cited answer on the left and the ranked hybrid search sources on the right](docs/images/search-results.png)
 
@@ -83,51 +83,51 @@ Browser
 
 ## Services
 
-### `casetally-frontend` — Next.js (port 3000)
+### `casetally-frontend`: Next.js (port 3000)
 
 - Search page with multi-turn chat, SSE token streaming, source cards
-- Browse U.S. Code page — 3-panel layout with `LegalTextRenderer` parsing `(a)(b)(1)(A)` statute structure
+- Browse U.S. Code page: 3-panel layout with `LegalTextRenderer` parsing `(a)(b)(1)(A)` statute structure
 - Homepage with sample queries, stats bar, how-it-works section
 - Runs locally via `npm run dev` (not in Docker)
 
-### `casetally-backend` — FastAPI (port 3001)
+### `casetally-backend`: FastAPI (port 3001)
 
-- `POST /v1/chat/stream` — query rewrite → hybrid search → SSE-streamed LLM answer
-- `POST /v1/search` — hybrid search only, p50 27ms retrieval across 83k+ chunks (see Evaluation for how measured)
-- `POST /v1/rewrite` — exposes query rewriting as a standalone endpoint
-- `GET /health/ready` — liveness + real DB ping
+- `POST /v1/chat/stream`: query rewrite → hybrid search → SSE-streamed LLM answer
+- `POST /v1/search`: hybrid search only, p50 45ms retrieval across 83k+ chunks (see Evaluation for how measured)
+- `POST /v1/rewrite`: exposes query rewriting as a standalone endpoint
+- `GET /health/ready`: liveness + real DB ping
 - Query rewriting via `GroqService.rewrite_query()` before every retrieval
-- Vector search degrades to full-text-only when the embedding model is unavailable — the package failed to import, or `SEARCH_EMBEDDING_ENABLED=false` — and the response reports `embedding_used` so the path taken is visible. This covers the model being *unavailable*, not *failing*: a load or encode error mid-request propagates as a 500
+- Vector search degrades to full-text-only when the embedding model is unavailable (the package failed to import, or `SEARCH_EMBEDDING_ENABLED=false`), and the response reports `embedding_used` so the path taken is visible. This covers the model being *unavailable*, not *failing*: a load or encode error mid-request propagates as a 500
 
-### `casetally-db` — PostgreSQL 15 + pgvector
+### `casetally-db`: PostgreSQL 15 + pgvector
 
-- `legal_chunks` table — 83,706 rows, each with `text_content`, `search_vector` (tsvector), `embedding` (vector(384))
+- `legal_chunks`: table: 83,706 rows, each with `text_content`, `search_vector` (tsvector), `embedding` (vector(384))
 - HNSW index on `embedding` column for sub-linear ANN lookup
 - GIN index on `search_vector` for full-text search
 - Triggers auto-update `search_vector` on insert/update
-- `legal_artifacts` rows carry the same `version_hash` as the chunk they belong to, so a search result and the source PDF it links to cannot drift apart when a statute is re-ingested
+- `legal_artifacts`: rows carry the same `version_hash` as the chunk they belong to, so a search result and the source PDF it links to cannot drift apart when a statute is re-ingested
 
-### `casetally-workers` — Embedding Worker
+### `casetally-workers`: Embedding Worker
 
 - Polls `legal_chunks WHERE embedding IS NULL AND is_current AND retry_count < MAX_EMBED_RETRIES` (default 3)
 - Claims each batch with `FOR UPDATE SKIP LOCKED`, so concurrent workers take disjoint rows instead of all selecting the same lowest ids; locks release on commit, so a crashed worker's rows requeue immediately
 - On batch failure, re-encodes the batch row by row and increments `retry_count` only on the chunk that raised, so one bad row cannot strand the other 99. The counter is written from a separate session because the batch transaction has already rolled back
 - Batch encodes via `sentence-transformers/all-MiniLM-L6-v2` on CPU
 - Writes 384-dim vectors back to DB in a single bulk executemany call
-- State tracked in Redis (IDLE → PROCESSING → IDLE) with heartbeat. State and metrics keys expire after 300s, the heartbeat after 30s — the gap is deliberate, so an observer can tell a dead worker from an idle one
+- State tracked in Redis (IDLE → PROCESSING → IDLE) with heartbeat. State and metrics keys expire after 300s and the heartbeat after 30s. The gap is deliberate, so an observer can tell a dead worker from an idle one
 
-### `casetally-ingestion` — Ingestion CLI
+### `casetally-ingestion`: Ingestion CLI
 
 - Custom section-by-section HTML parser across govinfo.gov files for all 53 existing U.S. Code titles (Title 53 is reserved and has no content), extracting section structure and cross-referencing PDF page offsets from embedded markup comments
 - Chunks text by section, writes to `legal_chunks`
-- Idempotent: SHA256 version hash per section — re-runs skip unchanged content, update changed content, and reset embeddings only when text changes
+- Idempotent: SHA256 version hash per section: re-runs skip unchanged content, update changed content, and reset embeddings only when text changes
 - Stale-chunk deactivation runs once per citation at the end of a run, using the union of every `clause_id` seen, so a citation appearing as multiple section headings cannot retire the chunks written by its own earlier occurrence
-- Verified corpus-wide: a full re-run across all 53 titles skips all 50,915 parsed section headings with 0 inserts, 0 updates, and 0 deactivations, leaving the database unchanged. Those headings resolve to 47,207 unique citations — 3,708 fewer, because some sections appear under more than one heading in the source HTML — which in turn chunk into 83,706 rows
+- Verified corpus-wide: a full re-run across all 53 titles skips all 50,915 parsed section headings with 0 inserts, 0 updates, and 0 deactivations, leaving the database unchanged. Those headings resolve to 47,207 unique citations, 3,708 fewer, because some sections appear under more than one heading in the source HTML, which in turn chunk into 83,706 rows
 
-### `casetally-infrastructure` — Docker Compose configs
+### `casetally-infrastructure`: Docker Compose configs
 
-- `docker-compose.local.yml` — full local stack (postgres, redis, backend, worker, frontend, adminer)
-- `casetally-infra-prod/` — Traefik reverse proxy config and Let's Encrypt volume layout for the production stack
+- `docker-compose.local.yml`: full local stack (postgres, redis, backend, worker, frontend, adminer)
+- `casetally-infra-prod/`: Traefik reverse proxy config and Let's Encrypt volume layout for the production stack
 
 ---
 
@@ -142,14 +142,14 @@ Browser
 | Embeddings | sentence-transformers (all-MiniLM-L6-v2, 384-dim) |
 | LLM | Groq API (openai/gpt-oss-20b) |
 | Cache | Redis (worker state) |
-| Data source | govinfo.gov HTML — 53 U.S. Code titles |
+| Data source | govinfo.gov HTML, 53 U.S. Code titles |
 
 ---
 
 ## Key Technical Decisions
 
 **Why hybrid search?**
-Legal text has precise terminology — `§ 1983`, `habeas corpus`, `mens rea`. PostgreSQL full-text search, ranked with `ts_rank_cd` cover density over OR-joined terms, catches exact statute numbers that semantic search misses. Vector search catches meaning when phrasing differs. Fusion beats either alone.
+Legal text has precise terminology, `§ 1983`, `habeas corpus`, `mens rea`. PostgreSQL full-text search, ranked with `ts_rank_cd` cover density over OR-joined terms, catches exact statute numbers that semantic search misses. Vector search catches meaning when phrasing differs. Fusion beats either alone.
 
 **Why query rewriting?**
 User language and legal language don't match. "Can my boss fire me?" contains none of the words in the statutes that answer it, and rewrites to "termination rights employee termination unlawful dismissal at-will employment" before retrieval. Measured effect is a trade-off: MRR improves 10% while Precision@3 and Recall@5 drop slightly, so the right statute ranks higher but the top-5 window gets noisier.
@@ -158,7 +158,7 @@ User language and legal language don't match. "Can my boss fire me?" contains no
 HNSW (Hierarchical Navigable Small World) provides better recall, handles inserts without retraining, and is what production vector databases (Pinecone, Weaviate, Qdrant) use internally. Replaced ivfflat after initial ingestion.
 
 **Why SSE over WebSocket?**
-Token streaming is one-directional (server → client). SSE is HTTP-native, auto-reconnects, and works through proxies — no overhead of a persistent bidirectional socket.
+Token streaming is one-directional (server → client). SSE is HTTP-native, auto-reconnects, and works through proxies, no overhead of a persistent bidirectional socket.
 
 **Why PostgreSQL for vectors instead of a dedicated vector DB?**
 Single database keeps full-text and vector search in one query with no cross-service joins. pgvector on PostgreSQL covers both at zero extra cost or infrastructure complexity.
@@ -169,9 +169,9 @@ Single database keeps full-text and vector search in one query with no cross-ser
 
 A retrieval evaluation harness lives in `scripts/eval_retrieval.py`. It runs 19 benchmark legal queries in two groups against the live search endpoint and measures:
 
-- **Precision@3** — fraction of top-3 results from the correct U.S. Code title
-- **Recall@5** — fraction of expected titles found in top-5 results
-- **MRR** — mean reciprocal rank of the first relevant result
+- **Precision@3**: fraction of top-3 results from the correct U.S. Code title
+- **Recall@5**: fraction of expected titles found in top-5 results
+- **MRR**: mean reciprocal rank of the first relevant result
 
 The **core** group is the original 15 queries. The **employment** group is 4 colloquially-phrased
 queries added as a regression test, reported separately so adding them cannot move the core
@@ -191,13 +191,18 @@ Two modes: raw hybrid search, and hybrid search with LLM query rewriting (the ac
 | Mean Precision@3 | 0.78 | 0.73 |
 | Mean Recall@5 | 0.83 | 0.79 |
 | Mean MRR | 0.85 | 0.88 |
-| p50 latency | 27ms | 72ms (incl. rewrite call) |
-| p95 latency | 122ms | 160ms |
+| p50 latency | 26ms | 72ms (incl. rewrite call) |
+| p95 latency | 105ms | 160ms |
 
 **How these were measured.** `scripts/eval_retrieval.py` against the Kubernetes deployment,
 through a `kubectl port-forward` to the API Service, with the embedding model warm and all 53
 titles ingested. Latency is the server-reported `took_ms`, so it covers retrieval and fusion but
-not the port-forward hop. Without rewriting the numbers are deterministic and reproduce exactly.
+not the port-forward hop.
+
+The headline latency figure quoted elsewhere, **p50 45ms and p95 105ms**, comes from a wider set
+of 64 varied queries rather than this 19-query benchmark, measured the same way and averaged over
+three warm runs. Both are reported because the benchmark exists to track quality and the wider set
+is a fairer latency sample: p50 325ms to 45ms is the before and after of the profiling work. Without rewriting the numbers are deterministic and reproduce exactly.
 With rewriting they do not: the rewrite is a live LLM call, so the core means hold at roughly
 0.73 / 0.79 / 0.88 across runs while individual queries move.
 

@@ -13,7 +13,7 @@ API service for legal search and LLM-powered streaming answers.
 
 This service owns:
 
-- Query rewriting — normalizes conversational questions into legal terminology before retrieval
+- Query rewriting: normalizes conversational questions into legal terminology before retrieval
 - Lexical retrieval against `legal_chunks.search_vector` using PostgreSQL full-text search
 - Vector retrieval against `legal_chunks.embedding` (HNSW index)
 - Score fusion for hybrid ranking
@@ -35,7 +35,7 @@ This service does not own:
 | POST | `/v1/search` | Hybrid search, returns ranked chunks |
 | POST | `/v1/chat/stream` | Query rewrite → hybrid search → SSE-streamed LLM answer |
 
-## Request Pipeline — `/v1/chat/stream`
+## Request Pipeline, `/v1/chat/stream`
 
 1. Rewrite user query into legal terminology via Groq (`rewrite_query`)
 2. Lexical retrieval using OR-joined `to_tsquery` + `ts_rank_cd` cover-density ranking
@@ -49,7 +49,7 @@ This service does not own:
 | Variable | Default | Description |
 |---|---|---|
 | `DATABASE_URL` | `postgresql://casetally:...@localhost:5432/casetally_law` | DB connection string |
-| `GROQ_API_KEY` | — | Groq API key (required) |
+| `GROQ_API_KEY` | | Groq API key (required) |
 | `GROQ_MODEL` | `openai/gpt-oss-20b` | Groq model for rewriting + answers |
 | `GROQ_REASONING_EFFORT` | `low` | Reasoning budget for reasoning-class models; set empty to omit |
 | `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Query embedding model |
@@ -75,10 +75,10 @@ curl -X POST http://localhost:3001/v1/search \
 
 ## Code Map
 
-- `app/main.py` — app init, health routes
-- `app/api/search.py` — search endpoint
-- `app/routers/chat.py` — chat/stream endpoint, query rewriting orchestration
-- `app/services/search.py` — hybrid full-text + vector retrieval
-- `app/services/groq_service.py` — query rewriting + LLM streaming
-- `app/db.py` — SQLAlchemy engine/session
-- `app/schemas.py` — request/response models
+- `app/main.py`: app init, health routes
+- `app/api/search.py`: search endpoint
+- `app/routers/chat.py`: chat/stream endpoint, query rewriting orchestration
+- `app/services/search.py`: hybrid full-text + vector retrieval
+- `app/services/groq_service.py`: query rewriting + LLM streaming
+- `app/db.py`: SQLAlchemy engine/session
+- `app/schemas.py`: request/response models

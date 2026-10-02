@@ -420,15 +420,16 @@ split state.
 HOST core count, not the cgroup quota, so inside a `cpu: 1` container it started
 11 threads to share 1 CPU of quota. The cost was measurable:
 
-| | threads | periods throttled | throttled_usec | chunks/sec/replica |
+| | threads | periods throttled | throttled_usec | rows/sec per replica |
 | --- | --- | --- | --- | --- |
 | before | 11 | 70 to 77% | 164M to 422M | 5.3 |
 | after `OMP_NUM_THREADS=1` | 1 | 6 to 11% | 18k to 99k | 8.2 |
 
 A 55% throughput gain from one env var, and time spent throttled fell by about
 four orders of magnitude. Threads above the quota do not add throughput, they add
-context switching. Three replicas now drain about 24.6 chunks/sec, so 1500 rows
-takes about a minute.
+context switching. 8.2 rows/sec is the per-replica figure under a 1-CPU limit and
+is the one to quote; three replicas together drain about 24.6 rows/sec, so 1500
+rows takes about a minute.
 
 Set as env vars rather than `torch.set_num_threads()` because OpenMP and MKL read
 them at import time, before any Python call could take effect.
@@ -857,7 +858,7 @@ exit code 0, while the pod took 9s to terminate inside its 60s grace period. The
 ## Frontend
 
 Built with Next.js standalone output, which cut the image from **1.15 GB to
-0.28 GB**. `next.config.mjs` sets `output: 'standalone'` so the build emits a
+297 MB**. `next.config.mjs` sets `output: 'standalone'` so the build emits a
 self-contained server with only the modules the app actually imports; the runtime
 stage then installs nothing.
 

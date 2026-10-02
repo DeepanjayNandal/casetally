@@ -15,10 +15,23 @@ name: casetally
 nodes:
   - role: control-plane
 
-    # Pinned by digest, not just by tag. "v1.37.0" is a moving target if the
+    # Pinned by digest, not just by tag. "v1.36.4" is a moving target if the
     # upstream tag is ever re-pushed; the digest is not. Recreating this
     # cluster six months from now gives byte-identical node software.
-    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+    #
+    # v1.36.4 rather than the v1.37.0 this cluster started on, because KEDA is
+    # installed here and KEDA's published compatibility matrix stops at v1.36:
+    # v2.21, the newest release, supports v1.34 to v1.36. Running one minor above
+    # a project's tested range is usually fine and is still not something to
+    # claim as supported, so the cluster moved instead. Nothing here needed 1.37:
+    # every apiVersion in these manifests is a GA group, and the newest field in
+    # use is podReplacementPolicy, beta since 1.29.
+    #
+    # This digest is the v1.36.4 image published in the kind v0.33.0 release
+    # notes, which is the kind version this file is used with. Node images are
+    # built per kind release; taking one from a different release is how you get
+    # a cluster that almost works.
+    image: kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed
 
     # ingress-ready=true is the nodeSelector that the ingress-nginx kind
     # manifest looks for. Set now even though no controller is installed yet:

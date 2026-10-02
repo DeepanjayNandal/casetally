@@ -2,7 +2,7 @@
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.dependencies import groq_service, search_service
 from app.schemas import SearchRequest, SearchResponse
 
@@ -48,4 +48,7 @@ def search(payload: SearchRequest, db: Session = Depends(get_db)):
         weight_vector=weight_vector,
         jurisdiction=payload.jurisdiction,
         document_type=payload.document_type,
+        # Lets the two retrieval branches run at the same time, each on its own
+        # session. See HybridSearchService.search.
+        session_factory=SessionLocal,
     )

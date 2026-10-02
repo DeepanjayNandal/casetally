@@ -10,6 +10,8 @@ import numpy as np
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.services.common_lexemes import COMMON_LEXEME_PCT
+
 try:
     from sentence_transformers import SentenceTransformer
 except Exception:  # pragma: no cover - allows startup without model package issues
@@ -32,6 +34,34 @@ logger = logging.getLogger(__name__)
 # branch a smaller constant is the right scale. Env-overridable so it can be swept
 # against the eval harness without a rebuild.
 RRF_K = int(os.getenv("RRF_K", "20"))
+
+# A lexeme appearing in at least this percentage of chunks is dropped from the
+# OR-joined lexical query. See _fetch_bm25, and common_lexemes.py for the
+# frequencies.
+#
+# 50 rather than 10, on measurement. At 10% this cut the lexical branch's median
+# from 171ms to 20ms and then failed the quality gate: core P@3 fell 0.78 to
+# 0.69, R@5 0.83 to 0.78, MRR 0.85 to 0.75. The reason is that "common in the
+# corpus" is not "unimportant to the query". "amend" is in 34% of chunks because
+# almost every section carries amendment notes, and it is also the whole point of
+# "freedom of speech First Amendment": dropping it left 0% of the original top 50
+# in place. Ranking with the full term set while narrowing only the WHERE clause
+# was better but still only recovered 70% of the original results.
+#
+# It also never addressed p95. The slowest queries have no common term to drop at
+# all: "income tax deduction business expense" is 232ms before and after, because
+# every one of its terms is below the threshold and their union is simply large.
+#
+# At 50% only the terms that carry no selectivity anywhere go: shall, section,
+# may, state, title, note, provided, related and a handful of bare numbers and
+# letters. That is quality-neutral and costs nothing to keep. The real wins came
+# from the vector index and from caching; see _fetch_vector and the Postgres
+# settings.
+LEXICAL_DF_MAX_PCT = float(os.getenv("LEXICAL_DF_MAX_PCT", "50.0"))
+
+# HNSW search breadth. Must be at least as large as the number of rows the vector
+# branch requests, or pgvector returns fewer. See _fetch_vector.
+HNSW_EF_SEARCH = int(os.getenv("HNSW_EF_SEARCH", "200"))
 
 
 def normalize_citation(citation: str) -> str:
@@ -189,6 +219,32 @@ class HybridSearchService:
         if not lexemes:
             return []
 
+        # Drop lexemes common enough that they cannot discriminate.
+        #
+        # ORing every term is what makes the branch correct, and it is also what
+        # makes it slow: the cost is not the index, it is ranking every matching
+        # row. EXPLAIN on "freedom of speech First Amendment" showed the bitmap
+        # index scan finishing in 8.8ms and the heap scan then taking 487ms to
+        # fetch 34,259 rows so ts_rank_cd could be computed on each. The reason
+        # the set is that large is one term: "amend" appears in 34% of chunks,
+        # while "freedom" is in 0.6% and "speech" in 0.2%. A term in a third of
+        # the corpus adds tens of thousands of rows to rank and almost nothing to
+        # the ranking.
+        #
+        # The threshold is 10% rather than lower because the cut has to stay away
+        # from terms that genuinely select: "tax" is 5.5% of chunks and is the
+        # whole point of a tax question, and "termin" is 8.4%. Both survive at
+        # 10%; both would be discarded at 5%.
+        #
+        # If every lexeme is common the filter is skipped entirely, because a
+        # query of nothing but common words still has to return something, and an
+        # empty tsquery would silently reduce hybrid search to vector-only.
+        kept = [lx for lx in lexemes if COMMON_LEXEME_PCT.get(lx, 0.0) < LEXICAL_DF_MAX_PCT]
+        if kept and len(kept) < len(lexemes):
+            dropped = [lx for lx in lexemes if lx not in kept]
+            logger.debug("lexical: dropped common lexemes %s, kept %s", dropped, kept)
+            lexemes = kept
+
         # Any term may match, and ts_rank_cd decides what is actually relevant.
         #
         # ANDing every term, which plainto_tsquery does, requires all of them in
@@ -255,6 +311,22 @@ class HybridSearchService:
         jurisdiction: Optional[str],
         document_type: Optional[str],
     ):
+        # How many candidates HNSW keeps while descending the graph.
+        #
+        # The default is 40, which is LOWER than the 50 rows this branch asks
+        # for, and pgvector cannot return more rows than it kept: the query was
+        # silently returning 40 results for a LIMIT of 50. Measured against an
+        # exact brute-force scan of all 83,706 vectors, ef_search=40 returned 40
+        # of the true top 50, ef_search=100 returned 48, and ef_search=200
+        # returned all 50. Latency at 200 is about 8ms, against 136ms for the
+        # sequential scan this replaced, so exact-equivalent recall is affordable
+        # here and worth paying for.
+        #
+        # SET LOCAL rather than a database-level setting, so the value lives with
+        # the query it belongs to, is version controlled, and applies on a fresh
+        # cluster without a migration. It is transaction scoped.
+        db.execute(text(f"SET LOCAL hnsw.ef_search = {HNSW_EF_SEARCH:d}"))
+
         sql = text(
             """
             SELECT id, citation, clause_id, text_content, jurisdiction, document_type, tags,
@@ -264,8 +336,24 @@ class HybridSearchService:
               AND embedding IS NOT NULL
               AND (:jurisdiction IS NULL OR jurisdiction = :jurisdiction)
               AND (:document_type IS NULL OR document_type = :document_type)
-            -- Same reasoning as the lexical branch: id makes ties deterministic.
-            ORDER BY embedding <=> CAST(:query_vec AS vector), id
+            -- No id tiebreaker here, deliberately, and this is the single most
+            -- expensive mistake measured in this service.
+            --
+            -- An HNSW index can satisfy "ORDER BY embedding <=> q" and nothing
+            -- else. Adding ", id" makes the ordering unsatisfiable by the index,
+            -- so the planner silently abandons it and sequentially scans all
+            -- 83,706 rows computing every distance. Measured warm, the same
+            -- query took 104-147ms with the tiebreaker and 0.5-3.7ms without it,
+            -- and EXPLAIN confirmed Seq Scan versus Index Scan using
+            -- idx_chunks_embedding. Cold, the scan version took 2.5 seconds.
+            --
+            -- Nothing is lost by dropping it. The tiebreaker was added to make
+            -- retrieval reproducible, and an index scan over a fixed HNSW index
+            -- already is: the returned id order hashed identically across five
+            -- consecutive runs. Exact ties in cosine distance between distinct
+            -- 384-dimensional float vectors are vanishingly unlikely, which is
+            -- why the lexical branch needs a tiebreaker and this one does not.
+            ORDER BY embedding <=> CAST(:query_vec AS vector)
             LIMIT :limit
             """
         )
@@ -328,17 +416,52 @@ class HybridSearchService:
         jurisdiction: Optional[str] = None,
         document_type: Optional[str] = None,
         embedding: Optional[List[float]] = None,
+        session_factory=None,
     ) -> Dict[str, Any]:
         started = time.perf_counter()
 
-        bm25_rows = self._fetch_bm25(db, query, bm25_k, jurisdiction, document_type)
-        # Accepting a precomputed vector lets search_multi encode every sub-query
-        # in one batch instead of once per call.
-        if embedding is None:
-            embedding = self.embedding_service.embed(query)
+        # The two branches are independent, so run them at the same time when the
+        # caller can supply a second session.
+        #
+        # They were sequential, which meant took_ms was the sum of two unrelated
+        # waits. The lexical branch dominates at about 72ms, while encoding the
+        # query takes 5ms and the vector branch 6ms, so overlapping them hides the
+        # whole embedding and vector cost behind the lexical scan.
+        #
+        # A session is not thread safe, hence the factory: the lexical branch gets
+        # its own. search_multi does not pass one, because it already runs a
+        # separate search per sub-query concurrently and nesting a second level of
+        # threads would oversubscribe two cores rather than use them.
+        bm25_rows: List[RetrievalRow] = []
         vector_rows: List[RetrievalRow] = []
-        if embedding is not None:
-            vector_rows = self._fetch_vector(db, embedding, vector_k, jurisdiction, document_type)
+
+        if session_factory is not None:
+            def lexical():
+                own = session_factory()
+                try:
+                    return self._fetch_bm25(own, query, bm25_k, jurisdiction, document_type)
+                finally:
+                    own.close()
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                fut = pool.submit(lexical)
+                if embedding is None:
+                    embedding = self.embedding_service.embed(query)
+                if embedding is not None:
+                    vector_rows = self._fetch_vector(
+                        db, embedding, vector_k, jurisdiction, document_type
+                    )
+                bm25_rows = fut.result()
+        else:
+            bm25_rows = self._fetch_bm25(db, query, bm25_k, jurisdiction, document_type)
+            # Accepting a precomputed vector lets search_multi encode every
+            # sub-query in one batch instead of once per call.
+            if embedding is None:
+                embedding = self.embedding_service.embed(query)
+            if embedding is not None:
+                vector_rows = self._fetch_vector(
+                    db, embedding, vector_k, jurisdiction, document_type
+                )
 
         by_id: Dict[int, RetrievalRow] = {}
         for row in bm25_rows:

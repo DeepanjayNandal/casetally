@@ -41,6 +41,18 @@ data:
   # image that loads the model.
   HF_HUB_OFFLINE: "1"
 
+  # Thread count for torch and the BLAS libraries underneath it.
+  #
+  # Without this, torch sizes its thread pool from the HOST cpu count, which it
+  # reads as 11, while the cgroup allows 2 CPUs' worth. The result is eleven
+  # threads fighting over two cores for a forward pass that is tiny: encoding one
+  # short query took anywhere from 7ms to 200ms, median 51ms, and the API pod was
+  # being CPU throttled. Matching the thread count to the limit removes the
+  # contention. One query at a time does not benefit from parallelism here; the
+  # model is small and the batch is one row.
+  OMP_NUM_THREADS: "2"
+  MKL_NUM_THREADS: "2"
+
   # --- Groq (API) -----------------------------------------------------------
   # The model id is config, not a secret. Only the key is sensitive.
   GROQ_MODEL: "openai/gpt-oss-20b"

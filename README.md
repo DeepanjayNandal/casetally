@@ -20,11 +20,11 @@ termination. It is in the eval set as a failing regression test.
 
 ## Screenshots
 
-![CaseTally home page showing the search entry point, with 53 U.S. Code titles and 47,207 sections indexed](docs/images/homepage.png)
+![CaseTally home page: a search box over a dark layout, with three example questions about debt collection, age discrimination and firearms, above a stats bar reading 53 U.S. Code titles, 47,207 sections indexed, hybrid full-text plus vector search, and a 45ms median search latency](docs/images/homepage.png)
 
-Answering *"copyright infringement damages"*, the streamed answer cites 17 U.S.C. § 504 and quotes the statutory text verbatim, with the ten retrieved sections ranked alongside it.
+Answering *"Can I be fired for my age?"*. The streamed answer cites 29 U.S.C. § 623 and § 633a, explains that § 623(a)(1) makes it unlawful to "fail or refuse to hire or to discharge any individual... because of such individual's age", and quotes that language verbatim under Key Statutory Language. The eight sections the model was actually given are ranked alongside it, and the answer names what the excerpts do not cover, here state age-discrimination statutes and defences such as a bona fide occupational qualification.
 
-![CaseTally answer view, showing a cited answer on the left and the ranked hybrid search sources on the right](docs/images/search-results.png)
+![CaseTally answer view: the question "Can I be fired for my age?" with a structured answer on the left citing 29 U.S.C. § 623 and § 633a as hyperlinked sections, and a Sources panel on the right listing the eight retrieved sections with relevance labels](docs/images/search-results.png)
 
 ---
 

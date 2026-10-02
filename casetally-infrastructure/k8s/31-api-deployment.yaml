@@ -64,7 +64,7 @@ spec:
           # Locally built, so there is no registry digest to pin. An explicit
           # version tag is the strongest available guarantee; it is never
           # :latest. Loaded into the node with `kind load`, see the README.
-          image: casetally-backend:0.2.0
+          image: casetally-backend:1.1.3
           imagePullPolicy: IfNotPresent
 
           # The image CMD is overridden only to add the graceful shutdown

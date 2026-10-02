@@ -86,9 +86,12 @@ for line in sys.stdin:
 # So treat a DECREASE as a restart boundary: bank the previous segment's peak
 # and begin a new one. The worker's true contribution is the sum of its
 # segments.
+# Without arguments: prints the total to stdout and a per-pod breakdown to stderr,
+# which is what the cross-check wants. With --per-pod: prints "pod<TAB>count" rows
+# to stdout and nothing else, so the caller can fold them into a sum.
 summarise_snapshots() {
-  [[ -f "$SNAP" ]] || { echo "0"; return; }
-  python3 - "$SNAP" <<'PY'
+  [[ -f "$SNAP" ]] || { [[ "${1:-}" == "--per-pod" ]] || echo "0"; return; }
+  SNAP_MODE="${1:-total}" python3 - "$SNAP" <<'PY'
 import sys, collections
 banked  = collections.OrderedDict()   # worker -> committed in finished segments
 current = collections.OrderedDict()   # worker -> peak of the live segment
@@ -107,14 +110,43 @@ for line in open(sys.argv[1]):
     else:
         current[w] = max(prev or 0, t)
 
+import os
+per_pod = os.environ.get("SNAP_MODE") == "--per-pod"
+
 total = 0
 for w in current:
     n = banked.get(w, 0) + current[w]
     total += n
-    note = f"  (restarted {restarts[w]}x, segments summed)" if restarts[w] else ""
-    print(f"  {w:38s} committed {n}{note}", file=sys.stderr)
-print(total)
+    if per_pod:
+        print(f"{w}\t{n}")
+    else:
+        note = f"  (restarted {restarts[w]}x, segments summed)" if restarts[w] else ""
+        print(f"  {w:38s} committed {n}{note}", file=sys.stderr)
+if not per_pod:
+    print(total)
 PY
+}
+
+# The durable per-pod committed tally.
+#
+# This is the primary accounting source. The worker does an HINCRBY on this hash
+# after every commit returns, the hash has no TTL, and nothing deletes it on
+# shutdown, so a pod that KEDA scales away leaves its total behind. That is the
+# property the log-based tally lacks: logs disappear with the pod.
+#
+# Caveat worth knowing before a demo: the hash lives in Redis, which runs with no
+# persistence and a Recreate strategy. A Redis restart mid-run resets the tally to
+# zero and the sum will come up short even though no rows were lost.
+committed_hash() {   # prints "pod<TAB>count" rows
+  # hgetall returns field and value on alternate lines, so pair them up.
+  kubectl exec -n "$NS" "$(redis_pod)" -- \
+    redis-cli hgetall worker:embedding:committed 2>/dev/null \
+    | awk 'NR%2{f=$0;next}{print f"\t"$0}'
+}
+
+committed_hash_reset() {
+  kubectl exec -n "$NS" "$(redis_pod)" -- \
+    redis-cli del worker:embedding:committed >/dev/null 2>&1 || true
 }
 
 # Rows a single container lifetime committed, read from its own log.
@@ -183,8 +215,23 @@ backlog)
   ok "queue now holds $nulled rows with embedding IS NULL"
   [[ "$backed" == "$nulled" ]] || die "backup count $backed != queue depth $nulled"
   rm -f "$SNAP" "$LEDGER"; mkdir -p "$STATE_DIR"
+  # The durable tally is cumulative and has no TTL, so the previous run's
+  # totals have to be cleared here. This is the only point at which they stop
+  # being meaningful.
+  committed_hash_reset
+  ok "reset the durable committed tally (worker:embedding:committed)"
   log ""
-  log "Workers will start draining within one poll interval (5s)."
+  paused="$(kubectl get scaledobject casetally-worker -n "$NS" \
+             -o jsonpath='{.metadata.annotations.autoscaling\.keda\.sh/paused-replicas}' 2>/dev/null || true)"
+  if [[ -n "$paused" ]]; then
+    warn "the ScaledObject is PAUSED at $paused replicas, so nothing will drain."
+    warn "unpause:  kubectl annotate scaledobject casetally-worker -n $NS autoscaling.keda.sh/paused-replicas-"
+  else
+    log "There are currently $(kubectl get deploy casetally-worker -n "$NS" -o jsonpath='{.spec.replicas}') worker replicas."
+    log "KEDA polls the queue every 10s and will scale the tier up on its own:"
+    log "  ${N} rows / targetQueryValue 1000 -> $(( (N + 999) / 1000 )) replicas, capped at 3."
+    log "Nothing here scales by hand."
+  fi
   log "Next:  ./demo-worker.sh watch"
   ;;
 
@@ -192,21 +239,46 @@ watch)
   step "Draining. Ctrl-C is safe at any time."
   total="$(q "select count(*) from ${BACKUP_TBL}" 2>/dev/null || echo 0)"
   [[ "$total" != "0" ]] || die "no backup table, so nothing to watch. Run backlog first."
-  printf '  %-9s %-11s %-9s %s\n' "elapsed" "remaining" "done" "rate"
+  # The replica and ready columns are the point of this view now: the tier is
+  # scaled by KEDA from queue depth, so you watch it climb 0 -> 3 and fall back to
+  # 0 without anyone touching kubectl.
+  printf '  %-9s %-11s %-9s %-8s %-6s %s\n' "elapsed" "remaining" "done" "rate" "repl" "ready"
   start=$(date +%s); last_done=0; last_t=$start
+  t_first=""; t_max=""; t_drained=""
   while :; do
     snapshot
     remaining="$(q "select count(*) from legal_chunks where embedding is null")"
+    repl="$(kubectl get deploy casetally-worker -n "$NS" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo '?')"
+    ready="$(kubectl get deploy casetally-worker -n "$NS" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)"
+    ready="${ready:-0}"
     now=$(date +%s); done=$(( total - remaining )); el=$(( now - start ))
     dt=$(( now - last_t )); dd=$(( done - last_done ))
     rate=0; [[ "$dt" -gt 0 ]] && rate=$(( dd / dt ))
-    printf '  %-9s %-11s %-9s %s/s\n' "${el}s" "$remaining" "$done" "$rate"
-    [[ "$remaining" == "0" ]] && break
+    printf '  %-9s %-11s %-9s %-8s %-6s %s\n' "${el}s" "$remaining" "$done" "${rate}/s" "$repl" "$ready"
+    [[ -z "$t_first"   && "$done" -gt 0      ]] && t_first=$el
+    [[ -z "$t_max"     && "$ready" -ge 3     ]] && t_max=$el
+    [[ "$remaining" == "0" ]] && { t_drained=$el; break; }
     last_done=$done; last_t=$now
     sleep 3
   done
   snapshot
-  ok "queue drained in $(( $(date +%s) - start ))s"
+  ok "queue drained in ${t_drained}s"
+  log "  first row processed at   ${t_first:-n/a}s   (cold start: pod pull, model load, first claim)"
+  log "  reached 3 ready replicas at ${t_max:-never}s"
+
+  # Scale-down is the other half of the story, and it is the half people forget
+  # to show. KEDA waits cooldownPeriod with the queue below the activation
+  # threshold before going to zero.
+  step "Waiting for KEDA to scale back to zero (cooldownPeriod 60s)"
+  z=$(date +%s)
+  while :; do
+    repl="$(kubectl get deploy casetally-worker -n "$NS" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo '?')"
+    el=$(( $(date +%s) - z ))
+    printf '  %-9s replicas=%s\n' "${el}s" "$repl"
+    [[ "$repl" == "0" ]] && { ok "back to zero ${el}s after the queue emptied"; break; }
+    [[ "$el" -gt 300 ]] && { warn "still at $repl after ${el}s, giving up on the wait"; break; }
+    sleep 10
+  done
   log "Next:  ./demo-worker.sh verify"
   ;;
 
@@ -229,11 +301,37 @@ verify)
                             || { warn "only $refilled of $N re-embedded"; failed=1; }
 
   step "Verify: per-worker committed counts sum to exactly N"
-  # Counted from each worker's own log, where a line is written only after the
-  # commit returns. Live pods are read directly (plus --previous if the
-  # container was restarted by a crash); pods destroyed during a demo were
-  # banked to the ledger before they disappeared.
-  sum=0
+  # Primary source: the durable Redis hash the worker HINCRBYs after each commit
+  # returns. It has no TTL and nothing deletes it on shutdown, so pods that KEDA
+  # scaled away still appear here. That is the whole reason it exists: the
+  # log-based tally below cannot see them, because their logs left with the pod.
+  sum=0; rows=0
+  while IFS=$'\t' read -r wp wn; do
+    [[ -n "${wp:-}" && -n "${wn:-}" ]] || continue
+    log "$(printf '%-38s committed %s' "$wp" "$wn")"
+    sum=$(( sum + wn )); rows=$(( rows + 1 ))
+  done < <(committed_hash)
+
+  if [[ "$rows" == "0" ]]; then
+    warn "the durable tally is empty. Either no work ran, or Redis was restarted"
+    warn "and took the counter with it (no persistence, Recreate strategy)."
+  fi
+  log "sum of per-worker committed = $sum   (N = $N)"
+  if [[ "$sum" == "$N" ]]; then
+    ok "sum equals N exactly: nothing lost and nothing processed twice"
+  elif [[ "$sum" -gt "$N" ]]; then
+    warn "sum exceeds N by $(( sum - N )): at least one row was embedded more than once"; failed=1
+  else
+    warn "sum is $(( N - sum )) short of N. A Redis restart mid-run would do this"
+    warn "without any row being lost; the row-level checks above are the authority."
+    failed=1
+  fi
+
+  log ""
+  log "Cross-check, read from each surviving worker's own log. A log line is"
+  log "written only after the commit returns, so this cannot overcount, but it"
+  log "only covers pods that still exist:"
+  logsum=0
   for p in $(worker_pods); do
     n="$(committed_from_log "$p" "")"
     rc="$(kubectl get pod "$p" -n "$NS" -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null || echo 0)"
@@ -243,29 +341,16 @@ verify)
       note="  (restarted ${rc}x: ${extra} pre-crash + ${n} after)"
     fi
     log "$(printf '%-38s committed %s%s' "$p" "$(( n + extra ))" "$note")"
-    sum=$(( sum + n + extra ))
+    logsum=$(( logsum + n + extra ))
   done
   if [[ -f "$LEDGER" ]]; then
     while IFS=$'\t' read -r wp wn; do
       [[ -n "${wp:-}" ]] || continue
-      log "$(printf '%-38s committed %s  (destroyed during demo, from ledger)' "$wp" "$wn")"
-      sum=$(( sum + wn ))
+      log "$(printf '%-38s committed %s  (destroyed by this script, from ledger)' "$wp" "$wn")"
+      logsum=$(( logsum + wn ))
     done < "$LEDGER"
   fi
-  log "sum of per-worker committed = $sum   (N = $N)"
-  if [[ "$sum" == "$N" ]]; then
-    ok "sum equals N exactly: nothing lost and nothing processed twice"
-  elif [[ "$sum" -gt "$N" ]]; then
-    warn "sum exceeds N by $(( sum - N )): at least one row was embedded more than once"; failed=1
-  else
-    warn "sum is $(( N - sum )) short of N: some committed work was not attributed"; failed=1
-  fi
-
-  log ""
-  log "Cross-check against the sampled Redis counters (expected to UNDERCOUNT,"
-  log "because cleanup() deletes a key on graceful exit and sampling is periodic):"
-  rsum="$(summarise_snapshots)"
-  log "redis-sampled sum = $rsum"
+  log "log-based sum = $logsum of $N   (expected to be short by whatever KEDA scaled away)"
 
   step "Verify: re-embedded vectors match the originals (cosine similarity)"
   # Cosine similarity, not byte equality. Batch composition changes between runs

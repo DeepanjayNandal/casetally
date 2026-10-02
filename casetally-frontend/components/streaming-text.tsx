@@ -88,10 +88,10 @@ export function StreamingText({ text, isStreaming }: StreamingTextProps) {
               return ""
             }
             const raw = extractText(children).trim()
-            const match = raw.match(/^(\d+)\s+U\.S\.C\.\s+§\s+(\S+?)([\s—\-–].+)?$/)
+            const match = raw.match(/^(\d+)\s+U\.S\.C\.\s+§\s+(\S+?)([\s:—\-–].+)?$/)
             if (match) {
               const [, title, section, rest] = match
-              const cleanSection = section.replace(/\.$/, "")
+              const cleanSection = section.replace(/[.:]$/, "")
               const url = `https://www.govinfo.gov/link/uscode/${title}/${cleanSection}`
               return (
                 <li style={{ margin: "4px 0", color: "hsl(var(--text-primary))" }}>

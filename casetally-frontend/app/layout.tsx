@@ -25,7 +25,7 @@ const inter = Inter({
 })
 
 export const metadata: Metadata = {
-  title: 'CaseTally — AI Legal Research',
+  title: 'CaseTally: AI Legal Research',
   description: 'Search the entire U.S. Code using natural language. Get grounded, cited answers with exact statute citations.',
   keywords: ['legal research', 'US Code', 'federal law', 'AI', 'citations'],
   icons: {

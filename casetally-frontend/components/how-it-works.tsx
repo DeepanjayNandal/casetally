@@ -5,7 +5,7 @@ const STEPS = [
     icon: Search,
     heading: "Search",
     description:
-      "Ask any legal question in plain English — statutes, rights, procedures, or definitions.",
+      "Ask any legal question in plain English, about statutes, rights, procedures, or definitions.",
   },
   {
     icon: Brain,

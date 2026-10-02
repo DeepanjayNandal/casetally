@@ -83,7 +83,7 @@ function AboutModal({ onClose }: { onClose: () => void }) {
           {[
             "Hybrid retrieval combining PostgreSQL full-text search and vector similarity search across 53 U.S. Code titles and 47,207 sections",
             "Retrieved sections are passed as context to an LLM which generates a structured answer with exact statute citations",
-            "All answers are grounded — the AI only uses retrieved legal text, never speculation",
+            "All answers are grounded: the AI only uses retrieved legal text, never speculation",
           ].map((item, i) => (
             <li key={i} style={{ fontSize: "14px", color: "hsl(var(--text-secondary))", lineHeight: 1.7, marginBottom: "8px", paddingLeft: "16px", position: "relative" }}>
               <span style={{ position: "absolute", left: 0, color: "hsl(var(--accent))" }}>•</span>

@@ -1,0 +1,53 @@
+# Memory limits for the KEDA components, sized for this cluster.
+#
+# A separate patch rather than an edit to keda-2.21.0.yaml, so the vendored file
+# stays byte-comparable against the upstream release and this deviation is the
+# only thing anyone has to review.
+#
+# WHY
+#
+# Upstream ships every component at requests 100m/100Mi, limits 1000m/1000Mi.
+# Those are defaults for a cluster with room, and this one has none: the node has
+# 7,934 MiB allocatable and the stack already declared 89% of it in limits before
+# KEDA arrived. Three components at 1000Mi took that to 105%, meaning the sum of
+# what pods were permitted to use exceeded the machine.
+#
+# Measured working set, idle, via `crictl stats` on the node:
+#
+#     keda-operator             31 MiB
+#     keda-metrics-apiserver    28 MiB
+#     keda-admission            10 MiB
+#     ------------------------------
+#     total                     69 MiB      against 3,000 MiB declared
+#
+# 192Mi is about 6x the busiest component's observed usage. That component is the
+# operator, and what it does here is small and bounded: hold one ScaledObject,
+# run one indexed Postgres query every ten seconds, watch one Deployment. The
+# headroom covers the scalers and watches this cluster does not use yet, while
+# still being a limit that would catch a leak before the node did.
+#
+# Requests drop 100Mi -> 64Mi for the same reason: requests are what the
+# scheduler reserves, and reserving 100Mi for a process that idles at 10 MiB
+# just makes the node look fuller than it is.
+#
+# CPU limits are left alone. CPU is compressible, so an over-generous CPU limit
+# costs scheduling pressure rather than an OOM kill, and KEDA's reconcile loops
+# are short and bursty, which is the shape that benefits from headroom.
+#
+# HOW
+#
+# A JSON patch indexed on container 0, not a strategic-merge patch keyed on
+# container name, because the three Deployments name their single container
+# differently: keda-operator, keda-metrics-apiserver, keda-admission-webhooks.
+# One name-keyed patch cannot cover all three, and three near-identical files
+# would be worse than one. Each Deployment has exactly one container, so index 0
+# is unambiguous; up.sh asserts that before patching.
+#
+# Applied with `kubectl patch --type=json`, so it merges into the upstream
+# Deployments rather than becoming a competing owner of their full spec.
+- op: replace
+  path: /spec/template/spec/containers/0/resources/limits/memory
+  value: 192Mi
+- op: replace
+  path: /spec/template/spec/containers/0/resources/requests/memory
+  value: 64Mi

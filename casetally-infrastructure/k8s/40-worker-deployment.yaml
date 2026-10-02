@@ -42,7 +42,18 @@ spec:
   #
   # Raising the per-pod ceiling instead would have been the wrong fix: the pods
   # were not short of memory, the node was.
-  replicas: 2
+  #
+  # No replicas field, deliberately. KEDA owns this number now, via the
+  # ScaledObject in 41-worker-scaledobject.yaml, which drives it between 0 and 3
+  # on queue depth. Declaring it here as well would mean every `kubectl apply`
+  # reset the count to the manifest's value and KEDA would move it back on its
+  # next poll, so the two would fight indefinitely and the apply would look like
+  # it had silently done nothing. Omitting it leaves the field absent from the
+  # desired state, which is what lets an external controller own it.
+  #
+  # The practical consequence: to scale by hand, pause the ScaledObject first
+  # (see the ingestion notes in the README), or the pause annotation and your
+  # kubectl scale will disagree.
 
   # RollingUpdate is safe here precisely because of SKIP LOCKED: a new and an
   # old replica overlapping cannot process the same row. Contrast Redis, which
@@ -76,7 +87,7 @@ spec:
 
       containers:
         - name: worker
-          image: casetally-worker:0.3.1
+          image: casetally-worker:0.4.0
           imagePullPolicy: IfNotPresent
 
           env:

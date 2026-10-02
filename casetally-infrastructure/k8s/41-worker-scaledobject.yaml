@@ -1,0 +1,139 @@
+# Autoscale the embedding worker on queue depth, and to zero when idle.
+#
+# Why queue depth and not CPU: the worker is a poller. An idle worker with an
+# empty queue sleeps, wakes every POLL_INTERVAL seconds, asks Postgres for rows,
+# gets none, and sleeps again. Its CPU is near zero whether there are 0 rows
+# waiting or 80,000, because what limits it is how much work exists, not how hard
+# it is working. A CPU trigger would therefore scale up only AFTER a worker was
+# already saturated, which is the wrong signal and arrives late. Queue depth is
+# the actual demand, and it is known before any work starts.
+#
+# Scaling to zero is the point. The corpus is fully embedded almost all of the
+# time, so the steady state is "nothing to do" and two idle workers were holding
+# about 712 MiB of a 7.9 GiB VM to poll an empty table.
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: casetally-postgres
+  namespace: casetally
+  labels:
+    app.kubernetes.io/part-of: casetally
+spec:
+  # The password is the only secret here, and it is read from the Secret that
+  # already exists. Nothing new is created and no credential appears in any
+  # manifest.
+  secretTargetRef:
+    - parameter: password
+      name: casetally-secrets
+      key: POSTGRES_PASSWORD
+
+  # The user and database names are not secrets, and they already have a single
+  # source of truth in the ConfigMap. Reading them from there rather than
+  # retyping them means the scaler cannot drift from what the API and the worker
+  # connect as.
+  configMapTargetRef:
+    - parameter: userName
+      name: casetally-config
+      key: POSTGRES_USER
+    - parameter: dbName
+      name: casetally-config
+      key: POSTGRES_DB
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: casetally-worker
+  namespace: casetally
+  labels:
+    app.kubernetes.io/name: worker
+    app.kubernetes.io/part-of: casetally
+spec:
+  scaleTargetRef:
+    name: casetally-worker
+
+  # 0 because an empty queue needs no workers at all, and the image is large
+  # enough that keeping one warm "just in case" costs 350 MiB to save roughly
+  # half a minute.
+  minReplicaCount: 0
+
+  # 3 is a memory ceiling, not a throughput one. Each worker's limit is 900Mi
+  # because it holds its own copy of MiniLM, and the whole stack already declares
+  # about 7.1 GiB against a 7.9 GiB VM. A fourth replica would be scheduled on
+  # requests and then compete for memory it cannot be guaranteed.
+  maxReplicaCount: 3
+
+  # How often the queue is measured. 10s is responsive enough that a demo does
+  # not feel laggy, and the query it runs is an index-only scan of a partial
+  # index measured at 0.037ms, so the polling itself costs nothing. Before that
+  # index existed the same question was a 17ms parallel sequential scan over all
+  # 83,706 rows, which at this interval would have been a permanent background
+  # tax competing with live search.
+  pollingInterval: 10
+
+  # Seconds the queue must stay below the activation threshold before scaling to
+  # zero. The default is 300, which is sensible for a service that would rather
+  # pay for an idle pod than a cold start, and far too slow to watch. A worker
+  # claims a 100-row batch in about two seconds, so 60s cannot be tripped by the
+  # gap between batches, and it is short enough to see the return to zero.
+  cooldownPeriod: 60
+
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          # KEDA owns the 1-to-0 transition, but 3-to-1 goes through the HPA,
+          # whose default scale-down stabilization window is 300s. Left alone,
+          # the replica count would sit at 3 for five minutes after the queue
+          # drained and only then begin stepping down. 30s keeps the whole
+          # cycle observable.
+          stabilizationWindowSeconds: 30
+
+  triggers:
+    - type: postgresql
+      authenticationRef:
+        name: casetally-postgres
+      metadata:
+        # Fully qualified on purpose. The query is executed by the KEDA operator,
+        # which runs in the keda namespace, not in casetally, and a bare Service
+        # name only resolves inside its own namespace. With "casetally-postgres"
+        # the ScaledObject goes Ready=False with
+        #   hostname resolving error: lookup casetally-postgres ... no such host
+        # which reads like a database problem and is really a DNS scope one.
+        # A Service name, not a credential.
+        host: casetally-postgres.casetally.svc.cluster.local
+        port: "5432"
+        # In-cluster traffic between two pods on one node; there is no TLS
+        # terminating in front of Postgres to speak to.
+        sslmode: disable
+
+        # The worker's own claim predicate, verbatim. If these two ever disagree
+        # the autoscaler is reacting to a queue the worker will not drain, so it
+        # is deliberately a copy of embedding_worker.py's filter:
+        #   embedding IS NULL, is_current, retry_count < MAX_EMBED_RETRIES.
+        # 3 is MAX_EMBED_RETRIES, written as a literal because the partial index
+        # backing this query needs an immutable predicate.
+        query: >-
+          SELECT count(*) FROM legal_chunks
+          WHERE embedding IS NULL AND is_current = TRUE AND retry_count < 3
+
+        # Rows per replica. KEDA asks for ceil(queue / targetQueryValue)
+        # replicas, so this is the unit of work one worker is expected to own.
+        #
+        # 1000 rows is about 20 seconds of work at the measured ~50 chunks/sec,
+        # and ten of the worker's 100-row batches. That is the right order of
+        # magnitude for a pod that takes tens of seconds to start: give it less
+        # and the start costs more than the work. It also gives a legible ramp,
+        # 1 row to 1 replica, 1001 to 2, 2001 to 3.
+        #
+        # Much smaller, say 100, and any real backlog instantly demands more
+        # replicas than the memory ceiling allows, so the autoscaler degenerates
+        # into a switch between 0 and 3. Much larger, say 3000, and a backlog of
+        # a few thousand never uses more than one worker.
+        targetQueryValue: "1000"
+
+        # Any waiting row at all wakes the tier up. KEDA activates when the
+        # metric is strictly greater than this, so 0 means one row is enough,
+        # which is what makes scale-to-zero safe: nothing can sit in the queue
+        # with no worker running.
+        activationTargetQueryValue: "0"

@@ -23,7 +23,7 @@ NS="casetally"
 # Tags are pinned here rather than read from the manifests, so there is exactly
 # one place to bump a version and the manifests stay declarative.
 IMG_BACKEND="casetally-backend:1.2.3"
-IMG_WORKER="casetally-worker:0.3.1"
+IMG_WORKER="casetally-worker:0.4.0"
 IMG_FRONTEND="casetally-frontend:1.1.0"
 
 # Empty on purpose. The frontend reads this with ?? rather than ||, so an empty
@@ -189,11 +189,48 @@ else
 fi
 
 # --------------------------------------------------------------------------
+phase "KEDA"
+# --------------------------------------------------------------------------
+# Installed before the application manifests because 41-worker-scaledobject.yaml
+# needs the ScaledObject CRD to exist. Server-side apply because the CRDs in this
+# file carry annotations larger than the 262kB that client-side apply tries to
+# stuff into last-applied-configuration.
+#
+# The manifest is vendored at a pinned version rather than curl'd from a release
+# URL; see keda/keda-2.21.0.yaml for the version rationale.
+if kubectl get deployment keda-operator -n keda >/dev/null 2>&1; then
+  log "KEDA already installed, reapplying to stay in sync"
+else
+  log "installing KEDA (pulls three images, usually the slow part)"
+fi
+kubectl apply --server-side -f "${K8S_DIR}/keda/keda-2.21.0.yaml" >/dev/null
+
+# Trim the memory limits to this cluster. The patch is indexed on container 0,
+# so assert there is exactly one container before trusting that index.
+for d in keda-operator keda-metrics-apiserver keda-admission; do
+  n=$(kubectl get "deployment/$d" -n keda \
+        -o go-template='{{len .spec.template.spec.containers}}' 2>/dev/null || echo 0)
+  [[ "$n" == "1" ]] || die "keda deployment $d has $n containers, but keda-resource-limits.yaml patches container 0.
+       Re-read that file before changing it."
+  kubectl patch "deployment/$d" -n keda --type=json \
+    --patch-file "${K8S_DIR}/keda/keda-resource-limits.yaml" >/dev/null
+done
+ok "KEDA memory limits trimmed to 192Mi per component (upstream ships 1000Mi)"
+
+for d in keda-operator keda-metrics-apiserver keda-admission; do
+  kubectl rollout status "deployment/$d" -n keda --timeout=600s >/dev/null
+done
+ok "KEDA $(kubectl get deployment keda-operator -n keda \
+      -o jsonpath='{.spec.template.spec.containers[0].image}' \
+      | grep -oE ':[0-9]+\.[0-9]+\.[0-9]+' | head -1 | tr -d ':') ready"
+
+# --------------------------------------------------------------------------
 phase "API, worker, ingress and frontend"
 # --------------------------------------------------------------------------
 kubectl apply -f "${K8S_DIR}/30-api-service.yaml" \
               -f "${K8S_DIR}/31-api-deployment.yaml" \
               -f "${K8S_DIR}/40-worker-deployment.yaml" \
+              -f "${K8S_DIR}/41-worker-scaledobject.yaml" \
               -f "${K8S_DIR}/60-traefik-rbac.yaml" \
               -f "${K8S_DIR}/61-traefik-deployment.yaml" \
               -f "${K8S_DIR}/62-traefik-service.yaml" \
@@ -202,11 +239,24 @@ kubectl apply -f "${K8S_DIR}/30-api-service.yaml" \
               -f "${K8S_DIR}/63-ingress.yaml" >/dev/null
 ok "applied"
 
-for d in traefik casetally-api casetally-frontend casetally-worker; do
+# casetally-worker is deliberately absent from this list. KEDA scales it on queue
+# depth, and on a healthy cluster the queue is empty, so its correct replica count
+# is zero and there is no rollout to wait for. Waiting on it would either pass
+# vacuously or block for the timeout depending on where KEDA's reconcile loop
+# happened to be.
+for d in traefik casetally-api casetally-frontend; do
   log "waiting for $d ..."
   kubectl rollout status "deployment/$d" -n "$NS" --timeout=600s >/dev/null
   ok "$d Ready"
 done
+
+so=$(kubectl get scaledobject casetally-worker -n "$NS" \
+       -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+if [[ "$so" == "True" ]]; then
+  ok "worker autoscaling active (0-3 on queue depth)"
+else
+  warn "ScaledObject is not Ready yet; the worker will not autoscale until it is"
+fi
 
 # --------------------------------------------------------------------------
 phase "Smoke test through the ingress"

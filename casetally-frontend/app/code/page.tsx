@@ -14,7 +14,7 @@ import { LegalTextRenderer } from "@/components/legal-text-renderer"
 // `npm run dev` relies on.
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001"
 
-// U.S. Code titles 1-54 (static list — titles don't change). Title 53 is
+// U.S. Code titles 1 to 54, a static list because titles do not change. 53 is
 // reserved with no content and is filtered out of the rendered list below,
 // leaving the 53 titles that are actually ingested and browsable.
 const USC_TITLES = [
@@ -141,7 +141,7 @@ export default function CodePage() {
           height: "calc(100vh - 64px)",
         }}
       >
-        {/* Left — Title list */}
+        {/* Left: the title list */}
         <div
           className="browse-sidebar"
           style={{
@@ -236,7 +236,7 @@ export default function CodePage() {
           ))}
         </div>
 
-        {/* Right — Sections or reading pane */}
+        {/* Right: sections, or the reading pane */}
         <div className="browse-right" style={{ display: "flex", height: "100%", overflow: "hidden" }}>
           {/* Sections list */}
           <div

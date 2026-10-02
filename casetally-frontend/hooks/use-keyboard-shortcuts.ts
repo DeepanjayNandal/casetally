@@ -17,7 +17,7 @@ export function useKeyboardShortcuts() {
         if (el) {
           el.focus()
         } else {
-          // Not on homepage — navigate then focus
+          // Not on the homepage, so navigate there first and then focus
           router.push("/")
           // Focus after navigation settles
           setTimeout(() => document.getElementById("main-search")?.focus(), 300)

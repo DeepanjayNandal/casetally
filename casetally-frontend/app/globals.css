@@ -13,7 +13,7 @@
   --text-secondary: 215 15% 65%;
   --text-muted: 215 10% 45%;
 
-  /* Accent — steel-blue */
+  /* Accent: steel blue */
   --accent: 215 60% 55%;
   --accent-glow: 215 70% 60%;
   --accent-muted: 215 40% 35%;
@@ -106,13 +106,13 @@
   top: 16px;
 }
 
-/* Search bar focus glow — pronounced per spec */
+/* Search bar focus glow, deliberately pronounced */
 .search-wrapper:focus-within {
   border-color: hsl(var(--accent)) !important;
   box-shadow: 0 0 0 3px hsl(var(--accent) / 0.2), 0 0 24px hsl(var(--accent) / 0.15);
 }
 
-/* 3-column grid for How It Works — forced, no orphaning */
+/* 3 column grid for How It Works, forced so no card is orphaned */
 .how-it-works-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -140,15 +140,15 @@
     padding-bottom: 64px !important;
     justify-content: flex-start !important;
   }
-  /* Search results — stack answer above sources */
+  /* Search results: stack the answer above the sources */
   .search-two-col {
     grid-template-columns: 1fr !important;
   }
-  /* Sources panel — remove sticky on mobile */
+  /* Sources panel: drop the sticky position on mobile */
   .sources-panel {
     position: static !important;
   }
-  /* Browse page — stack sidebar above list */
+  /* Browse page: stack the sidebar above the list */
   .browse-layout {
     grid-template-columns: 1fr !important;
     height: auto !important;
@@ -175,7 +175,7 @@
   50% { opacity: 0; }
 }
 
-/* Thinking pulse — single dot breathe */
+/* Thinking pulse: a single breathing dot */
 @keyframes thinking-pulse {
   0%, 100% { opacity: 0.3; transform: scale(0.85); }
   50% { opacity: 1; transform: scale(1.15); }

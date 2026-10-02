@@ -1,5 +1,5 @@
 // Global stylesheet. Loaded for its side effect, so it has no named binding
-// and linters may report it as unused — removing it strips every style in the
+// and linters may report it as unused. Removing it strips every style in the
 // app, since all components resolve colours and fonts through the CSS custom
 // properties this file defines.
 import './globals.css'

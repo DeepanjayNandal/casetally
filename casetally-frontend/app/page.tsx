@@ -46,7 +46,7 @@ export default function HomePage() {
     >
       <Nav />
 
-      {/* Hero — true center, no excess top padding */}
+      {/* Hero: truly centred, with no excess top padding */}
       <main
         id="main-content"
         className="hero-main"
@@ -125,7 +125,7 @@ export default function HomePage() {
             placeholder="e.g., What are the requirements for patent eligibility?"
             autoFocus
           />
-          {/* Press / hint — visually attached to bar, desktop only */}
+          {/* The "press /" hint, attached to the bar. Desktop only */}
           <div style={{ textAlign: "right", marginTop: "6px" }}>
             <span
               className="hidden-mobile"

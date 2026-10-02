@@ -23,7 +23,7 @@ export function Footer() {
         CaseTally · AI Legal Research System
       </span>
 
-      {/* Right — tech badges + github */}
+      {/* Right: tech badges and the github link */}
       <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
         {TECH_STACK.map((tech) => (
           <span

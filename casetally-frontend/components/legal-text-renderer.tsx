@@ -43,7 +43,7 @@ function parseSegments(raw: string): Segment[] {
       currentKind = kind
       current.push(trimmed)
     } else {
-      // Check if inline — text has a mid-sentence subsection marker
+      // Inline when the text carries a subsection marker mid sentence
       // Split inline markers within a single long run-on paragraph
       const parts = trimmed.split(/(?=\([a-z]\)\s|\(\d+\)\s|\([A-Z]\)\s)/)
       if (parts.length > 1) {

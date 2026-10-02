@@ -119,7 +119,7 @@ export function SearchInput({
         }}
       >
         {showStop ? (
-          // Filled stop square — same as Claude
+          // A filled square for stop, the usual affordance for halting a stream
           <Square size={14} fill="currentColor" strokeWidth={0} />
         ) : (
           <ArrowRight size={16} />

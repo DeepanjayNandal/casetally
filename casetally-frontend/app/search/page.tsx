@@ -38,6 +38,10 @@ interface Turn {
   isStreaming: boolean
   error: string | null
   tookMs: number | null
+  // Section numbers the answer cited that were NOT in the retrieved excerpts.
+  // A fabricated citation is indistinguishable from a real one to a reader, so it
+  // has to be surfaced rather than trusted.
+  unverifiedCitations: string[]
 }
 
 function SearchResults() {
@@ -87,6 +91,7 @@ function SearchResults() {
       isStreaming: false,
       error: null,
       tookMs: null,
+      unverifiedCitations: [],
     }
 
     setTurns((prev) => [...prev, newTurn])
@@ -142,6 +147,22 @@ function SearchResults() {
             if (json.type === "sources" && Array.isArray(json.results)) {
               updateTurn(turnId, { sources: json.results })
             }
+            if (json.type === "citation_check") {
+              updateTurn(turnId, { unverifiedCitations: json.unverified || [] })
+            }
+            // The backend reports failures that happen after the response
+            // headers are already sent, so they arrive as an event rather than a
+            // status code. Clear the loading state here too: this is a terminal
+            // outcome for the turn, and leaving isLoading set was what left the
+            // spinner running forever with no answer.
+            if (json.type === "error") {
+              firstToken = false
+              updateTurn(turnId, {
+                isLoading: false,
+                isStreaming: false,
+                error: json.message || "Something went wrong. Please try again.",
+              })
+            }
             if (json.type === "text" && json.chunk) {
               if (firstToken) {
                 firstToken = false
@@ -159,7 +180,14 @@ function SearchResults() {
         }
       }
 
+      // isLoading must be cleared here as well as on the first token. It used to
+      // be cleared ONLY when a token arrived, so a stream that completed without
+      // any text left isLoading true forever: the skeleton kept pulsing, and
+      // because the composer is disabled while the turn is active, the whole page
+      // became unusable until a reload. A finished stream is never still loading,
+      // whether or not it produced anything.
       updateTurn(turnId, {
+        isLoading: false,
         isStreaming: false,
         tookMs: Date.now() - startMs,
       })
@@ -297,7 +325,26 @@ function SearchResults() {
                   ) : !turn.isStreaming && !turn.answer.trim() ? (
                     <NoResultsCard />
                   ) : (
+                    <>
                     <StreamingText text={turn.answer} isStreaming={turn.isStreaming} />
+                    {turn.unverifiedCitations.length > 0 && (
+                      <div
+                        role="alert"
+                        className="mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200"
+                      >
+                        <span className="font-medium">Unverified citation{turn.unverifiedCitations.length > 1 ? "s" : ""}:</span>{" "}
+                        {turn.unverifiedCitations
+                          .map((c) => {
+                            const [title, section] = c.split(":")
+                            return `${title} U.S.C. § ${section}`
+                          })
+                          .join(", ")}
+                        . {turn.unverifiedCitations.length > 1 ? "These were" : "This was"} not among the
+                        retrieved sections, so {turn.unverifiedCitations.length > 1 ? "they" : "it"} could not be
+                        checked against the corpus. Treat with caution.
+                      </div>
+                    )}
+                    </>
                   )}
                 </div>
 

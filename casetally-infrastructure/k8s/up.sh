@@ -22,9 +22,9 @@ NS="casetally"
 
 # Tags are pinned here rather than read from the manifests, so there is exactly
 # one place to bump a version and the manifests stay declarative.
-IMG_BACKEND="casetally-backend:1.2.3"
+IMG_BACKEND="casetally-backend:1.3.0"
 IMG_WORKER="casetally-worker:0.4.0"
-IMG_FRONTEND="casetally-frontend:1.1.0"
+IMG_FRONTEND="casetally-frontend:1.2.0"
 
 # Empty on purpose. The frontend reads this with ?? rather than ||, so an empty
 # value means the bundle issues RELATIVE requests and is therefore same-origin on

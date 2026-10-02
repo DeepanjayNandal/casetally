@@ -115,7 +115,19 @@ build_if_needed "$IMG_FRONTEND" "${REPO_ROOT}/casetally-frontend" \
 # a re-run. It works for these because they are built single-platform; it fails
 # on multi-arch registry images, which the node pulls for itself instead.
 for img in "$IMG_BACKEND" "$IMG_WORKER" "$IMG_FRONTEND"; do
-  if docker exec "${CLUSTER}-control-plane" crictl images 2>/dev/null | grep -q "${img%%:*}.*${img##*:}"; then
+  # Match the repository and tag COLUMNS exactly.
+  #
+  # This used to be grep "${img%%:*}.*${img##*:}" over the whole crictl line,
+  # which is an unanchored regex where the dots in a version are wildcards and
+  # the image ID is part of the subject. Looking for casetally-frontend:1.1.0
+  # matched the digest "4b7216170a135" of an unrelated 0.5.0 row, because
+  # "16170" satisfies 1.1.0. The image was then reported as already present,
+  # kind load was skipped, and the pod tried to pull a local-only tag from
+  # Docker Hub and sat in ImagePullBackOff. Every earlier tag passed by luck.
+  if docker exec "${CLUSTER}-control-plane" crictl images 2>/dev/null \
+       | awk -v repo="${img%%:*}" -v tag="${img##*:}" \
+             '$1 == repo || $1 == "docker.io/library/" repo { if ($2 == tag) found = 1 }
+              END { exit !found }'; then
     log "$img already on the node"
   else
     kind load docker-image "$img" --name "$CLUSTER" >/dev/null 2>&1 && ok "loaded $img" \

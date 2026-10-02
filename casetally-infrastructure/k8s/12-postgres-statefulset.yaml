@@ -52,6 +52,54 @@ spec:
           image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
           imagePullPolicy: IfNotPresent
 
+          # Server tuning passed on the command line rather than written into
+          # postgresql.conf, so it lives in the manifest with the memory limit it
+          # is derived from. The official entrypoint prepends "postgres" when the
+          # first argument starts with a dash.
+          #
+          # The defaults are sized for a machine, not for a 2Gi container.
+          # shared_buffers was 128MB against a 664MB database, so the heap did not
+          # fit in cache: a single lexical query that ranked 34,259 rows read
+          # 27,764 blocks from disk, and the table-wide cache hit ratio sat at
+          # 72.9%. 512MB holds the working set with room to spare and still leaves
+          # most of the 2Gi for connections and the page cache.
+          #
+          # random_page_cost 4 is a spinning-disk figure. This runs on an overlay
+          # filesystem backed by the host SSD, where a random read is close to a
+          # sequential one, and overpricing it pushes the planner towards
+          # sequential scans it should not choose.
+          #
+          # jit off because every query here is short. JIT compilation is billed
+          # per query and pays back only over long analytical scans.
+          args:
+            - "-c"
+            - "shared_buffers=512MB"
+            - "-c"
+            - "effective_cache_size=1536MB"
+            - "-c"
+            - "work_mem=16MB"
+            - "-c"
+            - "random_page_cost=1.1"
+            - "-c"
+            - "jit=off"
+            # Let the lexical branch use both cores.
+            #
+            # With the data cached, ranking is CPU bound: the slowest query spends
+            # about 148ms computing ts_rank_cd over 15,643 rows with only 12 block
+            # reads. The planner would not parallelise it by default because the
+            # setup cost is priced above the estimated gain, but measured it is
+            # worth it: the same query runs in 74ms with two workers.
+            #
+            # This buys single-query latency, not throughput. Two cores spent on
+            # one query means two concurrent queries contend, which is the right
+            # trade for an interactive demo and the wrong one for a busy service.
+            - "-c"
+            - "min_parallel_table_scan_size=1MB"
+            - "-c"
+            - "parallel_setup_cost=50"
+            - "-c"
+            - "parallel_tuple_cost=0.005"
+
           ports:
             - name: postgres
               containerPort: 5432
@@ -153,11 +201,18 @@ spec:
             # Docker Desktop's VM has 7.75Gi total and must later also hold two
             # copies of MiniLM (API + worker), so Postgres is capped at 2Gi
             # rather than left unbounded.
+            # The CPU ceiling is 4 rather than 2 because 2 was measured as the
+            # binding constraint once the lexical branch began using parallel
+            # workers: cpu.stat showed 239 of 572 periods throttled, 42%, with
+            # 8.4 seconds of throttled time. A query planned for two workers plus
+            # its leader wants three runnable threads, which a 2 CPU quota cannot
+            # provide. The node has 11 allocatable CPUs, so this costs nothing in
+            # scheduling terms, and memory is untouched.
             requests:
               cpu: 250m
               memory: 512Mi
             limits:
-              cpu: "2"
+              cpu: "4"
               memory: 2Gi
 
       volumes:

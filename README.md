@@ -2,6 +2,17 @@
 
 A legal research platform for searching the U.S. Code using hybrid search and LLM-generated answers with citations.
 
+**Highlights**
+
+- Hybrid retrieval: MRR 0.85, P@3 0.78 on the core benchmark
+- Search latency: p50 45ms (from 325ms), p95 105ms
+- Worker queue: 3,000/3,000 rows with zero loss or duplication across graceful shutdown and SIGKILL
+- KEDA autoscaling: workers 0 to 3 on queue depth, back to 0 when idle
+- Zero-downtime rollouts: 240 requests, 0 failures
+- Citation guard: any cited section the model wasn't given is flagged in the UI
+
+Each number is measured, and how it was measured is explained further down.
+
 ---
 
 ## What It Does
@@ -27,15 +38,8 @@ Each runs as its own hybrid search. The fused result puts 29 U.S.C. § 623 in fr
 and the answer quotes the statute's own words: it is unlawful to "fail or refuse to hire or to
 discharge any individual... because of such individual's age".
 
-The example above is one that works. "Can my boss fire me?" still does not, and it stays in the
-eval set as a failing test. What changed is where it fails. It decomposes into "termination of
-employment at will", "employment discrimination unlawful termination" and "retaliatory
-termination unlawful", and the two statutes that answer it, 29 U.S.C. § 623 and
-42 U.S.C. § 2000e, now do reach the model among the eight selected chunks. The answer still
-refuses. Pension-plan termination statutes (29 U.S.C. § 1341 and § 1341a) also land in that
-context, because "termination" in this corpus overwhelmingly means plan termination, and the
-model reasons about those and about tax law instead of the two discrimination statutes sitting
-lower in the same list. The failure moved from retrieval to generation rather than going away.
+Not every question works. The ones that still fail, and why, are in Evaluation under Known
+failures.
 
 ---
 
@@ -51,48 +55,63 @@ Answering *"Can I be fired for my age?"*. The streamed answer cites 29 U.S.C. §
 
 ## System Architecture
 
+Two retrieval paths, and they are not the same. The chat page streams answers and gets its
+sources from that stream; the Browse U.S. Code page runs a plain search.
+
 ```text
 Browser
   │
-  ├─ GET  /                    Next.js frontend (port 3000)
-  ├─ POST /v1/chat/stream  ──► FastAPI backend (port 3001)
-  └─ POST /v1/search       ──► FastAPI backend (port 3001)
-                                    │
-                                    ▼
-                          Issue decomposition            Groq API
-                            3 or 4 sub-queries
-                                    │
-                                    ▼
-                        Hybrid search, one per
-                        sub-query, concurrent             PostgreSQL
-                                    │
-                           ┌────────┴────────┐
-                           ▼                 ▼
-                      full-text         pgvector
-                     ts_rank_cd      HNSW cosine sim
-                           └────────┬────────┘
-                                    ▼
-                          Reciprocal rank fusion          k=20
-                      within, then across, sub-queries
-                                    │
-                                    ▼
-                            Context selection
-                      8 chunks, round-robin by issue,
-                      max 2 per citation, 3 fused slots
-                                    │
-                                    ▼
-                              LLM answer                  Groq API
-                                    │
-                                    ▼
-                             Citation guard
-                      sections cited but never supplied
-                          are flagged as unverified
-                                    │
-                                    ▼
-                           SSE back to browser
+  ├─ GET  /                  Next.js frontend (port 3000)
+  ├─ POST /v1/chat/stream    chat page, answers
+  └─ POST /v1/search         Browse U.S. Code page, plain search
 
-EmbeddingWorker (offline)
-  queue is a NULL column in Postgres, claimed with FOR UPDATE SKIP LOCKED
+
+ANSWER PATH   POST /v1/chat/stream
+  │
+  ▼
+Issue decomposition, 3 or 4 sub-queries                       Groq API
+  │
+  ▼
+One hybrid search per sub-query, run concurrently             PostgreSQL
+  ├─ full-text   ts_rank_cd
+  └─ vector      pgvector, HNSW cosine sim
+  │
+  ▼
+Reciprocal rank fusion, within then across sub-queries        k=20
+  │
+  ▼
+Context selection
+  8 chunks, round-robin by issue, max 2 per citation,
+  3 slots reserved for the fused ranking
+  │
+  ▼
+LLM answer                                                    Groq API
+  │
+  ▼
+Citation guard
+  sections cited but never supplied are flagged as unverified
+  │
+  ▼
+SSE to the browser: sources first, then tokens
+  The sources panel is filled from this stream. The chat page
+  never calls /v1/search, so the panel cannot disagree with
+  what the model was given
+
+
+PLAIN SEARCH   POST /v1/search
+  │
+  ▼
+One query, exactly as asked: no decomposition, no rewrite     PostgreSQL
+  ├─ full-text   ts_rank_cd
+  └─ vector      pgvector, HNSW cosine sim
+  │
+  ▼
+Reciprocal rank fusion, ranked rows returned                  k=20
+  Used by the Browse U.S. Code page and by the eval harness
+
+
+EMBEDDING WORKER   offline
+  Queue is a NULL column in Postgres, claimed with FOR UPDATE SKIP LOCKED
   KEDA scales 0 to 3 replicas on queue depth, worker state in Redis
 ```
 
@@ -128,7 +147,10 @@ EmbeddingWorker (offline)
    ├─ A capped citation spends its slots on its best-matching chunks,
    │  scored by how many distinct question terms each one covers,
    │  weighted by how rare the term is among the candidates, not by rank
-   └─ Each chunk is cut to 1500 characters around the matching window
+   └─ Each chunk is cut to 1500 characters. The first 1500 are the
+      default, and a later window replaces them only if it covers at
+      least 2 more distinct question terms, since statutes put the
+      operative rule near the top of a section
 
 6. LLM answer (Groq, streaming)
    ├─ openai/gpt-oss-20b, max_tokens=2048
@@ -201,7 +223,7 @@ their own SSE error event with a message the UI can show.
 
 - `k8s/`: the Kubernetes manifests, the vendored KEDA release, and `up.sh`, which brings the whole cluster up from nothing. This is the primary setup
 - `docker-compose.local.yml`: full local stack (postgres, redis, backend, worker, frontend, adminer)
-- `casetally-infra-prod/`: Traefik reverse proxy config and Let's Encrypt volume layout for the production stack
+- `casetally-infra-prod/`: a production-style Compose setup, with Traefik reverse proxy config and a Let's Encrypt volume layout. It is a reference for how the stack would be fronted on a real host; nothing is deployed from it
 
 ---
 
@@ -232,7 +254,7 @@ Legal text has precise terminology, `§ 1983`, `habeas corpus`, `mens rea`. Post
 User language and legal language do not match. "Can my boss fire me?" contains none of the words in the statutes that answer it. The measured effect is a trade-off, not a free win: on the core 15, rewriting raises MRR from 0.85 to 0.88 and drops Precision@3 from 0.78 to 0.73 and Recall@5 from 0.83 to 0.79. The right statute ranks higher while the top-5 window gets noisier. Since the point is to put the right statute in front of the model, MRR is the metric that matters. On the colloquial employment questions it is the difference between a mean MRR of 0.38 and 0.88.
 
 **Why decompose into issues instead of rewriting once?**
-A rewrite is still one query, so one ranking has to serve every issue the question raises, and the terms that surface one issue bury the others. "Can I get fired for joining a union" spans discrimination and protected union activity, which live in different statutes under different titles. Searching each issue separately and fusing afterwards lets each one compete on its own terms. The answer path decomposes; `/v1/search` does not, and single rewriting survives only as the fallback when decomposition is unavailable.
+A rewrite is still one query, so one ranking has to serve every issue the question raises, and the terms that surface one issue bury the others. "Can I be fired for my age?" becomes three sub-queries, one aimed at age discrimination, one at unlawful termination and one at the statutory violation itself. Each is searched separately and the rankings are fused, which puts 29 U.S.C. § 623 and § 633a in front of the model. The answer path decomposes; `/v1/search` does not, and single rewriting survives only as the fallback when decomposition is unavailable.
 
 **Why RRF instead of averaging scores?**
 `ts_rank_cd` and cosine distance are not on the same scale and have no fixed relationship, so averaging them means inventing a conversion and then tuning it per query. Reciprocal rank fusion only reads positions, so there is nothing to calibrate, and one branch returning unusually large scores cannot swamp the other. It also composes: the same k=20 fuses lexical against vector within a sub-query, then fuses the sub-query lists against each other, and a chunk several sub-queries agree on accumulates contributions and rises.
@@ -273,7 +295,15 @@ python scripts/eval_retrieval.py --backend http://localhost:3001 --top-k 5 --rew
 
 ### Results (core 15 queries)
 
-Two modes: raw hybrid search, and hybrid search with LLM query rewriting (the actual user-facing flow).
+Two modes, neither of which is what a chat answer does. Raw hybrid search is exactly what
+`/v1/search` serves, so those numbers are the retrieval floor everything else sits on. Rewriting
+is now only the fallback the answer path takes when issue decomposition is unavailable, so the
+second column measures that fallback rather than the live path.
+
+What users actually get is the decomposition path, and this harness cannot score it. It sends one
+query per benchmark row and scores one ranking; decomposition issues 3 or 4 searches per question
+and fuses them, so there is no single ranking to line up against an expected title. Its quality is
+judged by reading answers, which is what the Known failures section below does.
 
 | Metric | Without rewriting | With rewriting |
 | --- | --- | --- |
@@ -308,11 +338,13 @@ ratio at 72.9%; and torch sized its thread pool from the host CPU count rather t
 limit. With those corrected, retrieval is back to sub-50ms p50 while keeping the recall that OR
 semantics bought.
 
-**Query rewriting is still a trade-off, and it is worth taking.** On the core group it costs
-Precision@3 0.78 to 0.73 and Recall@5 0.83 to 0.79 while raising MRR 0.85 to 0.88: the right
-statute ranks higher, and the rest of the top-5 window gets noisier. For a tool that shows one
-answer, MRR is the metric that matters. Rewriting is also what makes the colloquial employment
-group work at all, where it is the difference between a mean MRR of 0.38 and 0.88.
+**Query rewriting is still a trade-off, and it is worth keeping as the fallback.** On the core
+group it costs Precision@3 0.78 to 0.73 and Recall@5 0.83 to 0.79 while raising MRR 0.85 to 0.88:
+the right statute ranks higher, and the rest of the top-5 window gets noisier. For a tool that
+shows one answer, MRR is the metric that matters, so when decomposition is unavailable a rewritten
+query is a better thing to fall back to than the raw question. Rewriting is also what makes the
+colloquial employment group work at all, where it is the difference between a mean MRR of 0.38
+and 0.88.
 
 ### Results (employment group, 4 queries)
 
@@ -327,15 +359,27 @@ P@3 0.31, R@5 0.34, MRR 0.39. Seven benchmark queries scored 0.00 purely because
 were absent. Ingesting the remaining 31 titles more than doubled every metric, and latency
 *improved* despite 2.5x the data, since HNSW lookup is sub-linear in corpus size.
 
-**A query that still fails.** "Wire fraud criminal penalties" scores 0.00 in both modes even
-though `18 U.S.C. § 1343` is present with correct text. Two factors remain: 512-word chunking
-scatters the statute's terms across chunks, and "wire fraud" is a colloquial label absent from
-statutory text that reads "scheme or artifice to defraud" transmitted "by means of wire". The
-governing chunk contains neither "criminal" nor any form of "penalty".
+### Known failures
+
+**"Wire fraud criminal penalties" scores 0.00 in both modes**, even though `18 U.S.C. § 1343` is
+present with correct text. Two factors remain: 512-word chunking scatters the statute's terms
+across chunks, and "wire fraud" is a colloquial label absent from statutory text that reads
+"scheme or artifice to defraud" transmitted "by means of wire". The governing chunk contains
+neither "criminal" nor any form of "penalty".
 
 The original diagnosis also blamed `plainto_tsquery` requiring every term in one chunk. That is
 fixed: the lexical branch now ORs terms, so the branch no longer excludes the chunk before ranking.
 The query still scores 0.00, which means the vocabulary gap alone is sufficient to fail it.
+
+**"Can my boss fire me?" still refuses to answer**, and it stays in the eval set as a failing
+test. What changed is where it fails. It decomposes into "termination of employment at will",
+"employment discrimination unlawful termination" and "retaliatory termination unlawful", and the
+two statutes that answer it, 29 U.S.C. § 623 and 42 U.S.C. § 2000e, now do reach the model among
+the eight selected chunks. Pension-plan termination statutes
+(29 U.S.C. § 1341 and § 1341a) also land in that context, because "termination" in this corpus
+overwhelmingly means plan termination, and the model reasons about those and about tax law instead
+of the two discrimination statutes sitting lower in the same list. The failure moved from retrieval
+to generation rather than going away.
 
 Full per-query output for both modes is committed to `scripts/eval_results.txt`.
 

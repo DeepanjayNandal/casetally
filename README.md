@@ -1,20 +1,41 @@
 # CaseTally
 
-A legal research platform for searching U.S. statutes, codes, and regulations using hybrid search and LLM-powered answers.
+A legal research platform for searching the U.S. Code using hybrid search and LLM-generated answers with citations.
 
 ---
 
 ## What It Does
 
-Ask any legal question in plain English. CaseTally rewrites your question into legal terminology, searches 83,706 U.S. Code chunks using hybrid full-text + vector search, and streams a cited answer back in real time.
+Ask a legal question in plain English. CaseTally splits the question into the separate legal
+issues it raises, phrases each one in statutory language, searches 83,706 U.S. Code chunks for
+each issue in parallel, fuses the rankings, and streams a cited answer back as it is generated.
 
-> "Can I be fired for my age?" → rewrites to → "age discrimination employment unlawful termination prohibited"
-> → retrieves 29 U.S.C. § 623 → streams an answer quoting the statute's own words
+Splitting the question is the part that matters. A single rewrite collapses the question into one
+bag of terms, so one ranking has to cover every issue at once, and the terms that surface one
+issue push the others down. Searching per issue and fusing afterwards lets each issue compete on
+its own terms.
 
-The example is deliberately one that works. "Can my boss fire me?" does not: it still returns
-pension-plan termination statutes, because the statutes that answer it say "discharge" while the
-question and its rewrite say "termination", which in this corpus overwhelmingly means plan
-termination. It is in the eval set as a failing regression test.
+"Can I be fired for my age?" becomes three sub-queries, one per issue:
+
+| Issue | Sub-query |
+| --- | --- |
+| age discrimination | `age discrimination employment protection` |
+| termination | `termination unlawful discrimination` |
+| statutory violation | `unlawful age discrimination statute` |
+
+Each runs as its own hybrid search. The fused result puts 29 U.S.C. § 623 in front of the model,
+and the answer quotes the statute's own words: it is unlawful to "fail or refuse to hire or to
+discharge any individual... because of such individual's age".
+
+The example above is one that works. "Can my boss fire me?" still does not, and it stays in the
+eval set as a failing test. What changed is where it fails. It decomposes into "termination of
+employment at will", "employment discrimination unlawful termination" and "retaliatory
+termination unlawful", and the two statutes that answer it, 29 U.S.C. § 623 and
+42 U.S.C. § 2000e, now do reach the model among the eight selected chunks. The answer still
+refuses. Pension-plan termination statutes (29 U.S.C. § 1341 and § 1341a) also land in that
+context, because "termination" in this corpus overwhelmingly means plan termination, and the
+model reasons about those and about tax law instead of the two discrimination statutes sitting
+lower in the same list. The failure moved from retrieval to generation rather than going away.
 
 ---
 
@@ -37,10 +58,13 @@ Browser
   ├─ POST /v1/chat/stream  ──► FastAPI backend (port 3001)
   └─ POST /v1/search       ──► FastAPI backend (port 3001)
                                     │
-                    ┌───────────────┼───────────────┐
-                    ▼               ▼               ▼
-              Query Rewrite    Hybrid Search    Groq API
-              (Groq API)       (PostgreSQL)     (LLM stream)
+                                    ▼
+                          Issue decomposition            Groq API
+                            3 or 4 sub-queries
+                                    │
+                                    ▼
+                        Hybrid search, one per
+                        sub-query, concurrent             PostgreSQL
                                     │
                            ┌────────┴────────┐
                            ▼                 ▼
@@ -48,11 +72,28 @@ Browser
                      ts_rank_cd      HNSW cosine sim
                            └────────┬────────┘
                                     ▼
-                          Reciprocal rank fusion
-                               (k=20)
-                                    ▲
-                             EmbeddingWorker
-               (offline, NULL-column queue, Redis-tracked)
+                          Reciprocal rank fusion          k=20
+                      within, then across, sub-queries
+                                    │
+                                    ▼
+                            Context selection
+                      8 chunks, round-robin by issue,
+                      max 2 per citation, 3 fused slots
+                                    │
+                                    ▼
+                              LLM answer                  Groq API
+                                    │
+                                    ▼
+                             Citation guard
+                      sections cited but never supplied
+                          are flagged as unverified
+                                    │
+                                    ▼
+                           SSE back to browser
+
+EmbeddingWorker (offline)
+  queue is a NULL column in Postgres, claimed with FOR UPDATE SKIP LOCKED
+  KEDA scales 0 to 3 replicas on queue depth, worker state in Redis
 ```
 
 ---
@@ -60,24 +101,51 @@ Browser
 ## Request Flow
 
 ```text
-1. User types: "what happens if i dont pay taxes"
+1. User asks: "can I be fired for my age"
 
-2. Query Rewriting (Groq, non-streaming)
-   └─ Rewrites to: "tax debt collection unpaid tax penalties tax lien 26 usc 6851"
+2. Issue decomposition (Groq, non-streaming, seed=1)
+   ├─ 3 or 4 sub-queries in statutory language, one per legal issue:
+   │    age discrimination    -> "age discrimination employment protection"
+   │    termination           -> "termination unlawful discrimination"
+   │    statutory violation   -> "unlawful age discrimination statute"
+   └─ If Groq is unavailable, returns nothing, or raises, the request
+      falls back to a single rewritten query instead of failing
 
-3. Hybrid Search (PostgreSQL)
-   ├─ Lexical: ts_rank_cd(search_vector, OR-joined to_tsquery)  top 50
-   ├─ Vector: embedding <=> query_vector  [HNSW index]          top 50
-   └─ Fuse:   reciprocal rank fusion, k=20 → top 10
+3. Hybrid search per sub-query (PostgreSQL), run concurrently
+   ├─ Lexical: ts_rank_cd(search_vector, OR-joined to_tsquery)    top 50
+   ├─ Vector:  embedding <=> query_vector  [HNSW, ef_search=200]  top 50
+   └─ Fuse within the sub-query: RRF k=20, equal weights -> top 20
 
-4. LLM Answer (Groq, streaming)
-   ├─ Top 3 of those 10 chunks sent as context
-   ├─ openai/gpt-oss-20b generates cited answer
-   └─ Tokens streamed via SSE → react-markdown renders live
+4. Fuse across sub-queries: RRF k=20 -> top 30 candidates
+   └─ Every sub-query carries equal weight, since nothing says which
+      issue the user cared about most. A chunk that several sub-queries
+      agree on accumulates contributions and rises
 
-5. Sources panel: the same retrieval, emitted as an SSE "sources"
+5. Context selection -> the 8 chunks the model actually sees
+   ├─ Round-robin across issues, so one issue cannot take every slot
+   ├─ The top 3 slots are reserved for the fused ranking
+   ├─ At most 2 chunks per citation
+   ├─ A capped citation spends its slots on its best-matching chunks,
+   │  scored by how many distinct question terms each one covers,
+   │  weighted by how rare the term is among the candidates, not by rank
+   └─ Each chunk is cut to 1500 characters around the matching window
+
+6. LLM answer (Groq, streaming)
+   ├─ openai/gpt-oss-20b, max_tokens=2048
+   └─ Tokens streamed via SSE -> react-markdown renders live
+
+7. Citation guard
+   └─ Every "N U.S.C. § M" in the finished answer is checked against
+      what was actually supplied. Anything else is sent as an
+      "unverified" list and flagged in the UI
+
+8. Sources panel: the same retrieval, emitted as an SSE "sources"
    event before the first token. One search serves both
 ```
+
+Failures are explicit, never a blank answer or a spinner that never stops. Retrieval failing,
+every sub-query failing, no results at all, and a stream that produces zero tokens each emit
+their own SSE error event with a message the UI can show.
 
 ---
 
@@ -88,24 +156,28 @@ Browser
 - Search page with multi-turn chat, SSE token streaming, source cards
 - Browse U.S. Code page: 3-panel layout with `LegalTextRenderer` parsing `(a)(b)(1)(A)` statute structure
 - Homepage with sample queries, stats bar, how-it-works section
-- Runs locally via `npm run dev` (not in Docker)
+- Flags unverified citations inline, so a section the model cited but was never given is visible rather than silent
+- Built as a Docker image and run on Kubernetes, 2 replicas behind Traefik. Next.js `output: 'standalone'` emits a self-contained server bundle, so the runtime stage installs nothing and ships only what the build actually imported. `npm run dev` is still the quick single-service loop, but it is no longer how the app runs
 
 ### `casetally-backend`: FastAPI (port 3001)
 
-- `POST /v1/chat/stream`: query rewrite → hybrid search → SSE-streamed LLM answer
-- `POST /v1/search`: hybrid search only, p50 45ms retrieval across 83k+ chunks (see Evaluation for how measured)
-- `POST /v1/rewrite`: exposes query rewriting as a standalone endpoint
-- `GET /health/ready`: liveness + real DB ping
-- Query rewriting via `GroqService.rewrite_query()` before every retrieval
+- `POST /v1/chat/stream`: issue decomposition → parallel hybrid search → fusion → context selection → SSE-streamed LLM answer
+- `POST /v1/search`: hybrid search only, no rewrite and no decomposition, p50 45ms retrieval across 83k+ chunks (see Evaluation for how measured)
+- `POST /v1/rewrite`: exposes single-query rewriting as a standalone endpoint. The answer path uses it only as a fallback when decomposition is unavailable
+- `GET /health/live`: returns ok if the process is up, and deliberately checks nothing else. A liveness probe that pinged Postgres would make a brief database outage restart every API pod, turning one failure into two
+- `GET /health/ready`: runs a real `SELECT 1` and returns 503 if it fails, so a pod that cannot reach Postgres is pulled out of the Service instead of serving errors
+- Citation guard: after the answer finishes, every `N U.S.C. § M` it cites is matched against the sections actually supplied. Anything unmatched is emitted as an `unverified` list and flagged in the UI, so a hallucinated or mis-transcribed citation is visible instead of passing as sourced
+- Explicit SSE error events for retrieval failing, every sub-query failing, no results, and a stream returning zero tokens. Each one carries a message the UI renders, so none of these can show up as a blank answer or a spinner that never resolves
 - Vector search degrades to full-text-only when the embedding model is unavailable (the package failed to import, or `SEARCH_EMBEDDING_ENABLED=false`), and the response reports `embedding_used` so the path taken is visible. This covers the model being *unavailable*, not *failing*: a load or encode error mid-request propagates as a 500
 
-### `casetally-db`: PostgreSQL 15 + pgvector
+### `casetally-db`: PostgreSQL 16 + pgvector 0.8.6
 
 - `legal_chunks`: table: 83,706 rows, each with `text_content`, `search_vector` (tsvector), `embedding` (vector(384))
 - HNSW index on `embedding` column for sub-linear ANN lookup
 - GIN index on `search_vector` for full-text search
 - Triggers auto-update `search_vector` on insert/update
 - `legal_artifacts`: rows carry the same `version_hash` as the chunk they belong to, so a search result and the source PDF it links to cannot drift apart when a statute is re-ingested
+- Kubernetes runs `pgvector/pgvector:pg16`, which is PostgreSQL 16.15 with pgvector 0.8.6, and is where the corpus actually lives. Docker Compose still uses `ankane/pgvector:latest`, which is PostgreSQL 15.4, so the two environments are a major version apart
 
 ### `casetally-workers`: Embedding Worker
 
@@ -115,6 +187,7 @@ Browser
 - Batch encodes via `sentence-transformers/all-MiniLM-L6-v2` on CPU
 - Writes 384-dim vectors back to DB in a single bulk executemany call
 - State tracked in Redis (IDLE → PROCESSING → IDLE) with heartbeat. State and metrics keys expire after 300s and the heartbeat after 30s. The gap is deliberate, so an observer can tell a dead worker from an idle one
+- On Kubernetes, KEDA scales the workers from 0 to 3 replicas on queue depth, so an empty queue costs nothing (see Kubernetes for the ScaledObject and the measured run)
 
 ### `casetally-ingestion`: Ingestion CLI
 
@@ -124,8 +197,9 @@ Browser
 - Stale-chunk deactivation runs once per citation at the end of a run, using the union of every `clause_id` seen, so a citation appearing as multiple section headings cannot retire the chunks written by its own earlier occurrence
 - Verified corpus-wide: a full re-run across all 53 titles skips all 50,915 parsed section headings with 0 inserts, 0 updates, and 0 deactivations, leaving the database unchanged. Those headings resolve to 47,207 unique citations, 3,708 fewer, because some sections appear under more than one heading in the source HTML, which in turn chunk into 83,706 rows
 
-### `casetally-infrastructure`: Docker Compose configs
+### `casetally-infrastructure`: deployment configs
 
+- `k8s/`: the Kubernetes manifests, the vendored KEDA release, and `up.sh`, which brings the whole cluster up from nothing. This is the primary setup
 - `docker-compose.local.yml`: full local stack (postgres, redis, backend, worker, frontend, adminer)
 - `casetally-infra-prod/`: Traefik reverse proxy config and Let's Encrypt volume layout for the production stack
 
@@ -137,11 +211,14 @@ Browser
 | --- | --- |
 | Frontend | Next.js 16, React 19, TypeScript |
 | Backend | Python 3.11, FastAPI, SQLAlchemy 2.0 |
-| Database | PostgreSQL 15 + pgvector |
+| Database | PostgreSQL 16 + pgvector 0.8.6 (PostgreSQL 15 under Docker Compose) |
 | Search | Hybrid PostgreSQL full-text (`ts_rank_cd`) + vector, HNSW indexing |
 | Embeddings | sentence-transformers (all-MiniLM-L6-v2, 384-dim) |
 | LLM | Groq API (openai/gpt-oss-20b) |
 | Cache | Redis (worker state) |
+| Orchestration | Kubernetes on kind (node v1.36.4) |
+| Autoscaling | KEDA 2.21.0, Postgres scaler on queue depth |
+| Ingress | Traefik v3.3 (v2.10 under Docker Compose) |
 | Data source | govinfo.gov HTML, 53 U.S. Code titles |
 
 ---
@@ -152,10 +229,22 @@ Browser
 Legal text has precise terminology, `§ 1983`, `habeas corpus`, `mens rea`. PostgreSQL full-text search, ranked with `ts_rank_cd` cover density over OR-joined terms, catches exact statute numbers that semantic search misses. Vector search catches meaning when phrasing differs. Fusion beats either alone.
 
 **Why query rewriting?**
-User language and legal language don't match. "Can my boss fire me?" contains none of the words in the statutes that answer it, and rewrites to "termination rights employee termination unlawful dismissal at-will employment" before retrieval. Measured effect is a trade-off: MRR improves 10% while Precision@3 and Recall@5 drop slightly, so the right statute ranks higher but the top-5 window gets noisier.
+User language and legal language do not match. "Can my boss fire me?" contains none of the words in the statutes that answer it. The measured effect is a trade-off, not a free win: on the core 15, rewriting raises MRR from 0.85 to 0.88 and drops Precision@3 from 0.78 to 0.73 and Recall@5 from 0.83 to 0.79. The right statute ranks higher while the top-5 window gets noisier. Since the point is to put the right statute in front of the model, MRR is the metric that matters. On the colloquial employment questions it is the difference between a mean MRR of 0.38 and 0.88.
+
+**Why decompose into issues instead of rewriting once?**
+A rewrite is still one query, so one ranking has to serve every issue the question raises, and the terms that surface one issue bury the others. "Can I get fired for joining a union" spans discrimination and protected union activity, which live in different statutes under different titles. Searching each issue separately and fusing afterwards lets each one compete on its own terms. The answer path decomposes; `/v1/search` does not, and single rewriting survives only as the fallback when decomposition is unavailable.
+
+**Why RRF instead of averaging scores?**
+`ts_rank_cd` and cosine distance are not on the same scale and have no fixed relationship, so averaging them means inventing a conversion and then tuning it per query. Reciprocal rank fusion only reads positions, so there is nothing to calibrate, and one branch returning unusually large scores cannot swamp the other. It also composes: the same k=20 fuses lexical against vector within a sub-query, then fuses the sub-query lists against each other, and a chunk several sub-queries agree on accumulates contributions and rises.
 
 **Why HNSW over ivfflat?**
-HNSW (Hierarchical Navigable Small World) provides better recall, handles inserts without retraining, and is what production vector databases (Pinecone, Weaviate, Qdrant) use internally. Replaced ivfflat after initial ingestion.
+HNSW (Hierarchical Navigable Small World) provides better recall, handles inserts without retraining, and is what production vector databases (Weaviate, Qdrant) use internally. Replaced ivfflat after initial ingestion.
+
+**Why is Postgres itself the work queue?**
+The embedding queue is just `WHERE embedding IS NULL`, claimed with `FOR UPDATE SKIP LOCKED`. Concurrent workers take disjoint rows instead of contending over the lowest ids, and the claim lives in the same transaction as the write, so a crashed worker's rows requeue the moment its locks release. A separate broker would need its own deployment and would put the queue and the data in different systems, which is exactly where lost and duplicated work comes from. The rows are the queue, so they cannot disagree.
+
+**Why does KEDA scale on queue depth rather than CPU?**
+CPU is a lagging signal for this workload. The worker is only busy once it has already claimed rows, so scaling on CPU means waiting for a backlog to cause load before adding capacity, and it cannot reach zero, because an idle worker polling an empty queue still looks alive. Queue depth is the thing being worked off, so KEDA reads it directly from Postgres and scales 0 to 3. An empty queue runs no pods at all.
 
 **Why SSE over WebSocket?**
 Token streaming is one-directional (server → client). SSE is HTTP-native, auto-reconnects, and works through proxies, no overhead of a persistent bidirectional socket.
@@ -397,18 +486,6 @@ API docs: http://localhost:3001/docs
 ```bash
 docker compose -f docker-compose.local.yml run --rm ingestion python cli.py --source uscode
 ```
-
----
-
-## Deployment
-
-| Service | Platform |
-| --- | --- |
-| Frontend | Vercel |
-| Backend | Render |
-| Database | Supabase (PostgreSQL + pgvector) |
-| Redis | Upstash |
-| LLM | Groq (free tier) |
 
 ---
 

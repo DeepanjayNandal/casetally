@@ -5,7 +5,7 @@ A legal research platform for searching the U.S. Code using hybrid search and LL
 **Highlights**
 
 - Plain hybrid retrieval: MRR 0.85, P@3 0.78 on the core benchmark
-- Issue decomposition: everyday-question MRR 0.38 to 0.83, with 88% of expected statutes reaching the model
+- Issue decomposition: 83% of expected statutes reach the model (plain search 77%), and 88% on everyday questions (plain 63%)
 - Search latency: p50 45ms (from 325ms), p95 105ms
 - Worker queue: 3,000/3,000 rows with zero loss or duplication across graceful shutdown and SIGKILL
 - KEDA autoscaling: workers 0 to 3 on queue depth, back to 0 when idle
@@ -252,12 +252,12 @@ their own SSE error event with a message the UI can show.
 Legal text has precise terminology, `§ 1983`, `habeas corpus`, `mens rea`. PostgreSQL full-text search, ranked with `ts_rank_cd` cover density over OR-joined terms, catches exact statute numbers that semantic search misses. Vector search catches meaning when phrasing differs. Fusion beats either alone.
 
 **Why query rewriting?**
-User language and legal language do not match. "Can my boss fire me?" contains none of the words in the statutes that answer it. Measured over four runs, rewriting slightly hurts the core group: Precision@3 0.78 to 0.71, Recall@5 0.83 to 0.82, MRR 0.85 to 0.83. It earns its place on the colloquial employment questions instead, where mean MRR goes from 0.38 to 0.77. It is kept as the fallback for when decomposition is unavailable, since the questions that need a fallback are the colloquial ones.
+User language and legal language do not match. "Can my boss fire me?" contains none of the words in the statutes that answer it. Measured over eight runs, rewriting slightly hurts the core group: Precision@3 0.78 to 0.70, Recall@5 0.83 to 0.82, MRR 0.85 to 0.81. It earns its place on the colloquial employment questions instead, where mean MRR goes from 0.38 to 0.81. It is kept as the fallback for when decomposition is unavailable, since the questions that need a fallback are the colloquial ones.
 
 **Why decompose into issues instead of rewriting once?**
 A rewrite is still one query, so one ranking has to serve every issue the question raises, and the terms that surface one issue bury the others. "Can I be fired for my age?" becomes three sub-queries, one aimed at age discrimination, one at unlawful termination and one at the statutory violation itself. Each is searched separately and the rankings are fused, which puts 29 U.S.C. § 623 and § 633a in front of the model. The answer path decomposes; `/v1/search` does not, and single rewriting survives only as the fallback when decomposition is unavailable.
 
-The measured result is a deliberate trade, not a clean win. On the core 15, which are already phrased in statutory language, decomposition drops MRR from 0.85 to 0.72 and Precision@3 from 0.78 to 0.59, because there is nothing to translate and each sub-query brings its own tangent. On the colloquial employment questions it nearly doubles MRR, 0.38 to 0.83, and raises the share of expected statutes reaching the model from 0.63 to 0.88. Real users write colloquially, so that is the trade worth taking.
+The measured result is a deliberate trade, not a clean win. On the core 15, which are already phrased in statutory language, decomposition drops MRR from 0.85 to 0.72 and Precision@3 from 0.78 to 0.58, because there is nothing to translate and each sub-query brings its own tangent. On the colloquial employment questions it roughly doubles MRR, 0.38 to about 0.81, and raises the share of expected statutes reaching the model from 0.63 to 0.88. Real users write colloquially, so that is the trade worth taking. Rewriting reaches a similar MRR on that group, so the case for decomposition rests on the context coverage rather than on beating the fallback at ranking.
 
 The obvious next step, not built: route by question style, sending statute-phrased queries straight to plain search and decomposing only the everyday ones. That would keep both numbers instead of trading one for the other, and the classifier can be cheap, since the two kinds of question look very different.
 
@@ -315,23 +315,31 @@ Three retrieval paths. Plain hybrid search is what `/v1/search` serves, so it is
 floor everything else sits on. Single rewriting is the fallback the answer path takes when
 decomposition is unavailable. Decomposition is the live path, what a chat answer actually uses.
 
+Means are pooled over every run of each mode, with the range across runs in brackets.
+
 | Metric | Plain hybrid | Single rewrite | Decomposition |
 | --- | --- | --- | --- |
-| Mean Precision@3 | 0.78 | 0.71 | 0.59 |
-| Mean Recall@5 | 0.83 | 0.82 | 0.84 |
-| Mean MRR | 0.85 | 0.83 | 0.72 |
-| Expected titles in the 8 chunks sent to the model | 19/23 = 0.83 | not measured | 55/69 = 0.80 |
-| Runs | 1, deterministic | 4 | 3 |
-| Spread across runs, P@3 / R@5 / MRR | 0 / 0 / 0 | 0.04 / 0.04 / 0.03 | 0.09 / 0.01 / 0.05 |
+| Mean Precision@3 | 0.78 | 0.70 (0.67 to 0.73) | 0.58 (0.56 to 0.64) |
+| Mean Recall@5 | 0.83 | 0.82 (0.79 to 0.83) | 0.84 (0.83 to 0.86) |
+| Mean MRR | 0.85 | 0.81 (0.77 to 0.85) | 0.72 (0.71 to 0.76) |
+| Expected titles in the 8 chunks sent to the model | 19/23 = 0.83 | not measured | 113/138 = 0.82 |
+| Runs | 1, deterministic | 8 | 6 |
 | p50 latency | 26ms | 72ms (incl. rewrite call) | 256ms (3 searches, in-process) |
 | p95 latency | 105ms | 160ms | 471ms |
 
-The last row of metrics is the one worth reading first. The first three score a ranking, but the
-model never sees a ranking: it sees the 8 chunks context selection hands it, and it can only cite
-a statute it was given. Counting how many expected titles reach those 8 chunks is the closest
-thing here to an end-to-end retrieval number, and it is the only row where the three paths are
-doing the same job. Across all 19 queries it is 24/31 = 0.77 for plain and 76/93 = 0.82 for
+The titles row is the one worth reading first. The first three score a ranking, but the model
+never sees a ranking: it sees the 8 chunks context selection hands it, and it can only cite a
+statute it was given. Counting how many expected titles reach those 8 chunks is the closest thing
+here to an end-to-end retrieval number, and it is the only row where the three paths are doing
+the same job. Across all 19 queries it is 24/31 = 0.77 for plain and 155/186 = 0.83 for
 decomposition.
+
+On the core group plain and decomposition are about level on that row, 0.83 against 0.82, and the
+per-session values for decomposition were 0.80 and 0.84 either side of it. No claim is made that
+decomposition retrieves better context here. The difference shows up on the other group.
+
+The latency rows come from one session rather than being pooled, and are not comparable across
+columns anyway, for the reason below.
 
 Decomposition's latency is higher for a real reason and is not comparable to the other two
 columns: it runs three searches instead of one, in-process rather than over a port-forward, and
@@ -349,12 +357,11 @@ is a fairer latency sample: p50 325ms to 45ms is the before and after of the pro
 
 **Plain hybrid search is deterministic and reproduces exactly. The two LLM paths do not.** An
 earlier version of this table reported the rewrite column as 0.73 / 0.79 / 0.88 from a single
-run. Re-measuring over four runs gives 0.71 / 0.82 / 0.83, with per-run MRR of 0.82, 0.82, 0.82
-and 0.85. The rewrite prompt and `rewrite_query` are byte-identical to the commit that produced
-the old figures, so nothing regressed: the 0.88 was simply one favourable draw, and it sits above
-every value seen in four later runs. The lesson is that a single run of an LLM-dependent path is
-not a measurement, which is why the decomposition numbers here are means over three runs with the
-spread reported alongside.
+run. Re-measuring over eight runs gives 0.70 / 0.82 / 0.81, with core MRR ranging 0.77 to 0.85.
+The rewrite prompt and `rewrite_query` are byte-identical to the commit that produced the old
+figures, so nothing regressed: the 0.88 was simply one favourable draw, and it sits above every
+value seen in eight later runs. The lesson is that a single run of an LLM-dependent path is not a
+measurement, which is why both LLM modes here are pooled over every run with their ranges shown.
 
 **Latency was once much worse, and the causes were specific.** An intermediate version of this
 table reported p50 97ms and p95 574ms, against p50 18ms for the original AND-semantics lexical
@@ -370,10 +377,10 @@ limit. With those corrected, retrieval is back to sub-50ms p50 while keeping the
 semantics bought.
 
 **Query rewriting no longer helps on the core group, and is kept as the fallback anyway.** Over
-four runs it costs Precision@3 0.78 to 0.71, leaves Recall@5 about level at 0.83 to 0.82, and
-takes MRR from 0.85 down to 0.83. That is a small loss, not the gain this section used to claim.
+eight runs it costs Precision@3 0.78 to 0.70, leaves Recall@5 about level at 0.83 to 0.82, and
+takes MRR from 0.85 down to 0.81. That is a small loss, not the gain this section used to claim.
 What justifies keeping it is the other group: on the colloquially-phrased employment questions it
-moves mean MRR from 0.38 to 0.77, which is the difference between useless and useful. So when
+moves mean MRR from 0.38 to 0.81, which is the difference between useless and useful. So when
 decomposition is unavailable, a rewritten query is still a better thing to fall back to than the
 raw question, because the questions most likely to need the fallback are the colloquial ones.
 
@@ -387,26 +394,36 @@ protection statute itself reaches the model has to be checked by reading the ans
 
 | Metric | Plain hybrid | Single rewrite | Decomposition |
 | --- | --- | --- | --- |
-| Mean Precision@3 | 0.25 | 0.61 | 0.67 |
-| Mean Recall@5 | 0.38 | 0.75 | 0.92 |
-| Mean MRR | 0.38 | 0.77 | 0.83 |
-| Expected titles in the 8 chunks sent to the model | 5/8 = 0.63 | not measured | 21/24 = 0.88 |
-| Runs | 1, deterministic | 4 | 3 |
-| Spread across runs, P@3 / R@5 / MRR | 0 / 0 / 0 | 0.25 / 0.26 / 0.26 | 0.00 / 0.13 / 0.13 |
+| Mean Precision@3 | 0.25 | 0.66 (0.50 to 0.83) | 0.67 (0.67 to 0.67) |
+| Mean Recall@5 | 0.38 | 0.78 (0.62 to 0.88) | 0.90 (0.88 to 1.00) |
+| Mean MRR | 0.38 | 0.81 (0.62 to 1.00) | 0.81 (0.75 to 0.88) |
+| Expected titles in the 8 chunks sent to the model | 5/8 = 0.63 | not measured | 42/48 = 0.88 |
+| Runs | 1, deterministic | 8 | 6 |
+
+**Read the two LLM columns as ranges, not as a ranking.** With 4 queries, a single query moves a
+mean by 0.25, and the ranges show it: rewriting's MRR alone ran from 0.62 to 1.00 across eight
+runs. Both LLM modes come out at mean MRR 0.81 here, and their ranges overlap almost completely,
+so this group cannot say which of the two is better on that metric. Across the two measurement
+sessions the ordering actually reversed. What it does say, unambiguously, is that both beat plain
+search: every one of the fourteen LLM runs scored above plain's 0.38, the lowest being 0.62.
 
 **The trade-off, in plain words.** Decomposition costs ranking quality on questions already
 written in statutory language, where core MRR falls from 0.85 to 0.72, and roughly doubles it on
-everyday questions, where employment MRR rises from 0.38 to 0.83 and context coverage from 0.63
-to 0.88. That is the expected shape: a core query like "patent eligibility requirements invention"
+everyday questions, where MRR rises from 0.38 to about 0.81 and context coverage from 0.63 to
+0.88. That is the expected shape: a core query like "patent eligibility requirements invention"
 is already phrased the way the statute is, so there is nothing to translate and splitting it only
 adds a tangent for each sub-query to chase. It was chosen anyway, because CaseTally's users ask in
 everyday language, and on that kind of question plain search puts nothing useful in front of the
 model at all. For "can my boss fire me" the plain path's 8 chunks contained no relevant title;
-decomposition's contained both in all three runs.
+decomposition's contained both in all six runs.
+
+Context coverage is the sturdiest number in this group: 42/48 = 0.88 for decomposition against
+5/8 = 0.63 for plain, and it came out at exactly 21/24 in both sessions independently.
 
 **Caveats, briefly.** The employment group is only 4 queries, so its means move a lot per query
-and the spread above is wide. Decomposition varies between runs: 12 of the 19 queries decomposed
-identically in all three, the rest did not. And Precision@3 is partly capped by construction for
+and the ranges above are wide. Decomposition varies between runs: within a session, 12 of 19
+queries in one and 14 of 19 in the other produced identical sub-queries in all three runs, and
+the rest did not. And Precision@3 is partly capped by construction for
 a multi-issue ranking, because it always divides by 3 while a fused list deliberately interleaves
 issues, so when only one of three issues maps to the expected title the metric cannot exceed about
 0.33 however good the retrieval is. MRR and context coverage do not have that problem, which is
@@ -446,7 +463,7 @@ overwhelmingly means plan termination, and the model reasons about those and abo
 of the two discrimination statutes sitting lower in the same list. The failure moved from retrieval
 to generation rather than going away.
 
-Full per-query output for both modes is committed to `scripts/eval_results.txt`.
+Full per-query output for all three modes is committed to `scripts/eval_results.txt`.
 
 ---
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Retrieval evaluation harness — CaseTally
+Retrieval evaluation harness for CaseTally
 Measures Precision@3, Recall@5, MRR, and p95 latency across benchmark queries.
 
 Usage:
@@ -242,7 +242,7 @@ def run_eval(backend: str, top_k: int, use_rewrite: bool = False, sleep_s: float
                 query = rewrite_query(backend, query)
             results, took_ms = search(backend, query, top_k)
         except Exception as exc:
-            print(f"  ERROR — {item['label']}: {exc}")
+            print(f"  ERROR: {item['label']}: {exc}")
             continue
 
         p3 = precision_at_k(results, item["expected_titles"], 3)
@@ -270,7 +270,7 @@ def run_eval(backend: str, top_k: int, use_rewrite: bool = False, sleep_s: float
             time.sleep(sleep_s)
 
     if not p3_all:
-        print("  No results — is the backend running?")
+        print("  No results, is the backend running?")
         return
 
     lat_sorted = sorted(lat_all)
@@ -294,7 +294,7 @@ def run_eval(backend: str, top_k: int, use_rewrite: bool = False, sleep_s: float
             f" {statistics.mean(rr_all):>5.2f}"
             f" {int(statistics.mean(lat_all)):>5}ms"
         )
-    print(f"\n  Latency — p50: {p50}ms   p95: {p95}ms")
+    print(f"\n  Latency, p50: {p50}ms   p95: {p95}ms")
     print(f"  Queries run : {len(p3_all)} / {len(BENCHMARK)}")
     print()
 
@@ -349,7 +349,7 @@ def run_decompose_eval(
         _select_context,
     )
 
-    print("\nCaseTally Retrieval Evaluation — decomposition mode")
+    print("\nCaseTally Retrieval Evaluation, decomposition mode")
     print(f"top_k scored     : {top_k} (same slice the other modes score)")
     print(f"candidate pool   : {CANDIDATE_K}   context sent: {ANSWER_TOP_K}")
     print(f"runs             : {runs}   sleep between Groq calls: {sleep_s}s")

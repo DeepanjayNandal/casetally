@@ -1,24 +1,28 @@
 CaseTally retrieval evaluation results
-======================================================================
+==========================================================================
 
-Generated  : 2026-10-03 UTC
-Commit     : f00e64beb1eadee25923109bbc165e611b8c9f4f
+Scope      : two measurement sessions, pooled. Both ran on 2026-10-03, session 1
+             from about 04:18 UTC and session 2 from about 05:03 UTC.
+Commit     : 05d645c4fd2315aff00a45be4ea77f32fd7da99c
 Deployment : Kubernetes on kind, node v1.36.4, casetally-backend:1.3.0,
              PostgreSQL 16.15 with pgvector 0.8.6, 2 API replicas behind Traefik
 Corpus     : 83,706 chunks, 47,207 citations, all 53 U.S. Code titles, embedding model warm
 Benchmark  : 19 queries, the core 15 plus the employment 4, from scripts/eval_retrieval.py
 
-Commands
-----------------------------------------------------------------------
+The pooled summary below is what the README tables report. Both sessions' per-query
+output follows it in full, labelled by session.
 
-  plain, 1 run
+Commands
+--------------------------------------------------------------------------
+
+  plain, once per session
     python scripts/eval_retrieval.py --top-k 5 --backend http://localhost:3001
 
-  rewrite, 4 runs
+  rewrite, 4 runs per session, 8 pooled
     python scripts/eval_retrieval.py --top-k 5 --backend http://localhost:3001 \
       --rewrite --sleep 4
 
-  decompose, 3 runs
+  decompose, 3 runs per session, 6 pooled
     kubectl cp scripts/eval_retrieval.py casetally/<api-pod>:/tmp/eval_retrieval.py
     kubectl exec -n casetally <api-pod> -- sh -c \
       'cd /app && PYTHONPATH=/app python3 /tmp/eval_retrieval.py --mode decompose --runs 3'
@@ -30,74 +34,394 @@ answers. Its fused ranking is scored on the same top-5 slice the other two modes
 so the three sets of columns are comparable.
 
 Why the run counts differ
-----------------------------------------------------------------------
+--------------------------------------------------------------------------
 
-Plain hybrid search performs no LLM call, is deterministic, and reproduces exactly, so
-one run is enough. Rewrite and decompose each call an LLM before retrieving. An LLM call
-is not reproducible even at temperature 0: the serving backend configuration is not
-fixed, and batched inference on a mixture-of-experts model is not bit-reproducible.
-Temperature 0 means greedy, not deterministic. So those two modes are reported as means
-over several runs, with every per-run value and the spread listed, and re-running this
-file will not reproduce them digit for digit. Treat any single run of them as one sample.
+Plain hybrid search performs no LLM call and is deterministic. It returned identical
+numbers in both sessions, every metric and every context fraction, which is what makes
+it usable as the baseline the other two are measured against. It is therefore reported
+once rather than pooled.
 
-Em dashes in the harness output have been normalised to plain punctuation here.
-
-
-SUMMARY OF MEANS
-======================================================================
-
-Core 15 queries
-
-  Metric                              plain    rewrite    decompose
-  ------------------------------ ---------- ---------- ------------
-  Mean Precision@3                     0.78       0.70         0.57
-  Mean Recall@5                        0.83       0.82         0.84
-  Mean MRR                             0.85       0.79         0.72
-  Titles in the 8 chunks sent         19/23        n/a        58/69
-    as a fraction                      0.83        n/a         0.84
-  Runs                                    1          4            3
-
-  Per-run values, core
-    P@3  rewrite   [0.71, 0.69, 0.67, 0.73]  spread 0.06
-    P@3  decompose [0.556, 0.6, 0.556]  spread 0.044
-    R@5  rewrite   [0.82, 0.81, 0.83, 0.81]  spread 0.02
-    R@5  decompose [0.828, 0.861, 0.828]  spread 0.033
-    MRR  rewrite   [0.85, 0.77, 0.77, 0.78]  spread 0.08
-    MRR  decompose [0.706, 0.739, 0.706]  spread 0.033
-
-Employment 4 queries
-
-  Metric                              plain    rewrite    decompose
-  ------------------------------ ---------- ---------- ------------
-  Mean Precision@3                     0.25       0.71         0.67
-  Mean Recall@5                        0.38       0.81         0.88
-  Mean MRR                             0.38       0.84         0.79
-  Titles in the 8 chunks sent           5/8        n/a        21/24
-    as a fraction                      0.63        n/a         0.88
-  Runs                                    1          4            3
-
-  Per-run values, employment
-    P@3  rewrite   [0.5, 0.75, 0.83, 0.75]  spread 0.33
-    P@3  decompose [0.667, 0.667, 0.667]  spread 0.000
-    R@5  rewrite   [0.62, 0.88, 0.88, 0.88]  spread 0.26
-    R@5  decompose [0.875, 0.875, 0.875]  spread 0.000
-    MRR  rewrite   [0.62, 0.88, 1.0, 0.88]  spread 0.38
-    MRR  decompose [0.875, 0.75, 0.75]  spread 0.125
-
-All 19 queries, titles reaching the 8 chunks sent to the model:
-  plain     24/31 = 0.774
-  decompose 79/93 = 0.849
-
-The first three metrics score a ranking. The model never sees a ranking, it sees the 8
-chunks context selection hands it, and it can only cite a statute it was given, so the
-titles row is the closest thing here to an end-to-end retrieval number.
+Rewrite and decompose each call an LLM before retrieving. An LLM call is not
+reproducible even at temperature 0: the serving backend configuration is not fixed, and
+batched inference on a mixture-of-experts model is not bit-reproducible. Temperature 0
+means greedy, not deterministic. Their figures are means over every run with the range
+across runs beside them, and a single run of either is one sample rather than a
+measurement. Re-running will not reproduce them digit for digit.
 
 
-======================================================================
-MODE 1 of 3: plain hybrid search, no rewrite, no decomposition
-======================================================================
+POOLED SUMMARY
+==========================================================================
 
-What /v1/search serves. Deterministic.
+Core 15 queries, already phrased in statutory language
+
+  Metric                                  plain              rewrite            decompose
+  ---------------------------------- ---------- -------------------- --------------------
+  Mean Precision@3                         0.78  0.70 (0.67 to 0.73)  0.58 (0.56 to 0.64)
+  Mean Recall@5                            0.83  0.82 (0.79 to 0.83)  0.84 (0.83 to 0.86)
+  Mean MRR                                 0.85  0.81 (0.77 to 0.85)  0.72 (0.71 to 0.76)
+  Expected titles in the 8 chunks    19/23 = 0.83         not measured       113/138 = 0.82
+  Runs                                        1                    8                    6
+
+Employment 4 queries, everyday phrasing
+
+  Metric                                  plain              rewrite            decompose
+  ---------------------------------- ---------- -------------------- --------------------
+  Mean Precision@3                         0.25  0.66 (0.50 to 0.83)  0.67 (0.67 to 0.67)
+  Mean Recall@5                            0.38  0.78 (0.62 to 0.88)  0.90 (0.88 to 1.00)
+  Mean MRR                                 0.38  0.81 (0.62 to 1.00)  0.81 (0.75 to 0.88)
+  Expected titles in the 8 chunks    5/8 = 0.63         not measured         42/48 = 0.88
+  Runs                                        1                    8                    6
+
+All 19 queries, expected titles reaching the 8 chunks sent to the model:
+  plain     24/31 = 0.77
+  decompose 155/186 = 0.83
+
+That row is the closest thing here to an end-to-end retrieval number. The first three
+metrics score a ranking, but the model never sees a ranking: it sees the 8 chunks
+context selection hands it, and it can only cite a statute it was given.
+
+Two things this pooling settles. On the employment group both LLM modes come out at mean
+MRR 0.81 with ranges that overlap almost entirely, and the ordering reversed between the
+two sessions, so this group cannot rank them against each other. What it does show is
+that both beat plain search: all 14 LLM runs scored above plain's 0.38, lowest 0.62. And
+on the core group, decompose context coverage is level with plain, 0.82 against 0.83, so
+no claim is made that decomposition retrieves better context on statute-phrased queries.
+
+Latency is not pooled and not comparable across modes. Plain and rewrite are
+server-reported took_ms over a port-forward for one search. Decompose is wall time for 3
+concurrent searches in-process, excluding the decompose LLM call that precedes them. The
+README quotes session 1: plain p50 26ms and p95 105ms, rewrite 72ms and 160ms,
+decompose 256ms and 471ms.
+
+
+==========================================================================
+SESSION 1 PER-QUERY OUTPUT, 2026-10-03, from about 04:18 UTC
+==========================================================================
+
+--------------------------------------------------------------------------
+SESSION 1, MODE 1 of 3: plain hybrid search, no rewrite, no decomposition
+--------------------------------------------------------------------------
+
+CaseTally Retrieval Evaluation
+Backend : http://localhost:3001
+top_k   : 5
+rewrite : off
+========================================================================================
+  Query label                                  P@3   R@5   MRR     ms
+----------------------------------------------------------------------------------------
+  First Amendment / civil rights              0.33  0.50  1.00   130ms
+  Patents (Title 35)                          1.00  1.00  1.00   104ms
+  Bankruptcy (Title 11)                       1.00  1.00  1.00    18ms
+  Copyrights (Title 17)                       1.00  1.00  1.00    12ms
+  Internal Revenue (Title 26)                 1.00  1.00  1.00    74ms
+  Crimes (Title 18)                           0.00  0.00  0.00    18ms
+  Immigration (Title 8)                       1.00  1.00  1.00    67ms
+  Commerce / Antitrust (Title 15)             0.67  1.00  1.00    53ms
+  Social Security (Title 42)                  1.00  1.00  1.00    46ms
+  Employment discrimination (Title 42/29/5)   1.00  1.00  1.00    23ms
+  Controlled substances (Title 21)            1.00  1.00  1.00    33ms
+  Firearms (Title 18/26)                      0.00  0.50  0.25    13ms
+  Labor / minimum wage (Title 29/5)           1.00  0.50  1.00    44ms
+  Clean Water Act (Title 33)                  1.00  1.00  1.00    76ms
+  Habeas corpus (Title 28)                    0.67  1.00  0.50    10ms
+----------------------------------------------------------------------------------------
+  Wrongful termination (headline)             0.00  0.00  0.00    12ms
+  Age discrimination (held out)               0.67  0.50  1.00    12ms
+  Pregnancy discrimination (held out)         0.33  1.00  0.50    20ms
+  Union retaliation (held out)                0.00  0.00  0.00    11ms
+========================================================================================
+  MEAN (core, n=15)                           0.78  0.83  0.85    48ms
+  MEAN (employment, n=4)                      0.25  0.38  0.38    13ms
+  MEAN (all, n=19)                            0.67  0.74  0.75    40ms
+
+  Latency, p50: 23ms   p95: 130ms
+  Queries run : 19 / 19
+
+Expected titles present in the 8 chunks context selection would send, per query.
+Computed with the same context_title_coverage function the decompose mode uses,
+against _select_context(results, 8, 2, query) exactly as chat.py calls it.
+
+  Query label                                    titles
+  -------------------------------------------- --------
+  First Amendment / civil rights                    2/4
+  Patents (Title 35)                                1/1
+  Bankruptcy (Title 11)                             1/1
+  Copyrights (Title 17)                             1/1
+  Internal Revenue (Title 26)                       1/1
+  Crimes (Title 18)                                 0/1
+  Immigration (Title 8)                             1/1
+  Commerce / Antitrust (Title 15)                   1/1
+  Social Security (Title 42)                        1/1
+  Employment discrimination (Title 42/29/5)         3/3
+  Controlled substances (Title 21)                  1/1
+  Firearms (Title 18/26)                            2/2
+  Labor / minimum wage (Title 29/5)                 1/2
+  Clean Water Act (Title 33)                        1/1
+  Habeas corpus (Title 28)                          2/2
+  -----------------------------------------------------
+  Wrongful termination (headline)                   0/2
+  Age discrimination (held out)                     2/2
+  Pregnancy discrimination (held out)               2/2
+  Union retaliation (held out)                      1/2
+
+--------------------------------------------------------------------------
+SESSION 1, MODE 2 of 3: single query rewrite, then plain hybrid search, 4 runs
+--------------------------------------------------------------------------
+
+  session 1, rewrite run 1 of 4
+
+  Query label                                  P@3   R@5   MRR     ms
+----------------------------------------------------------------------------------------
+  First Amendment / civil rights              0.33  0.25  0.50   188ms
+  Patents (Title 35)                          0.33  1.00  1.00   176ms
+  Bankruptcy (Title 11)                       1.00  1.00  1.00    40ms
+  Copyrights (Title 17)                       1.00  1.00  1.00    23ms
+  Internal Revenue (Title 26)                 1.00  1.00  1.00   102ms
+  Crimes (Title 18)                           0.00  0.00  0.00    53ms
+  Immigration (Title 8)                       1.00  1.00  1.00   125ms
+  Commerce / Antitrust (Title 15)             0.67  1.00  1.00    76ms
+  Social Security (Title 42)                  1.00  1.00  1.00   172ms
+  Employment discrimination (Title 42/29/5)   0.33  0.67  1.00    82ms
+  Controlled substances (Title 21)            1.00  1.00  1.00    89ms
+  Firearms (Title 18/26)                      0.00  0.50  0.25    50ms
+  Labor / minimum wage (Title 29/5)           1.00  1.00  1.00   184ms
+  Clean Water Act (Title 33)                  1.00  1.00  1.00   134ms
+  Habeas corpus (Title 28)                    0.67  1.00  0.50    28ms
+----------------------------------------------------------------------------------------
+  Wrongful termination (headline)             0.33  0.50  1.00    76ms
+  Age discrimination (held out)               1.00  1.00  1.00    98ms
+  Pregnancy discrimination (held out)         0.67  1.00  0.50   111ms
+  Union retaliation (held out)                1.00  1.00  1.00   172ms
+========================================================================================
+  MEAN (core, n=15)                           0.69  0.83  0.82   101ms
+  MEAN (employment, n=4)                      0.75  0.88  0.88   114ms
+  MEAN (all, n=19)                            0.70  0.84  0.83   104ms
+
+  Latency, p50: 98ms   p95: 188ms
+  Queries run : 19 / 19", "is_error": true, "tool_use_id": "toolu_0116oBMDcvT5k2XY6EpUEHr5"}]}, "uuid": "39ff722a-8a80-43ca-85fc-ac015fa7965c", "timestamp": "2026-10-03T04:30:28.952Z", "toolUseResult": "Error: Exit code 143
+
+  Note: this run's output was written to the terminal rather than to a file at the
+  time, and was recovered from the session log. Its per-query rows average to the
+  group means printed above, 0.69 / 0.83 / 0.82 and 0.75 / 0.88 / 0.88, which was
+  checked before including it. Nothing here is reconstructed by hand.
+
+  session 1, rewrite run 2 of 4
+
+CaseTally Retrieval Evaluation
+Backend : http://localhost:3001
+top_k   : 5
+rewrite : on
+========================================================================================
+  Query label                                  P@3   R@5   MRR     ms
+----------------------------------------------------------------------------------------
+  First Amendment / civil rights              0.33  0.25  0.50   196ms
+  Patents (Title 35)                          0.67  1.00  1.00   141ms
+  Bankruptcy (Title 11)                       1.00  1.00  1.00    23ms
+  Copyrights (Title 17)                       1.00  1.00  1.00    47ms
+  Internal Revenue (Title 26)                 1.00  1.00  1.00   173ms
+  Crimes (Title 18)                           0.00  0.00  0.00    32ms
+  Immigration (Title 8)                       1.00  1.00  1.00   128ms
+  Commerce / Antitrust (Title 15)             0.67  1.00  1.00    57ms
+  Social Security (Title 42)                  1.00  1.00  1.00   155ms
+  Employment discrimination (Title 42/29/5)   0.33  0.67  1.00    53ms
+  Controlled substances (Title 21)            1.00  1.00  1.00    71ms
+  Firearms (Title 18/26)                      0.00  0.50  0.25    22ms
+  Labor / minimum wage (Title 29/5)           1.00  1.00  1.00   152ms
+  Clean Water Act (Title 33)                  1.00  1.00  1.00   115ms
+  Habeas corpus (Title 28)                    0.67  0.50  0.50    59ms
+----------------------------------------------------------------------------------------
+  Wrongful termination (headline)             0.33  0.50  1.00    60ms
+  Age discrimination (held out)               1.00  1.00  1.00    83ms
+  Pregnancy discrimination (held out)         0.67  1.00  0.50   139ms
+  Union retaliation (held out)                0.67  0.50  1.00   106ms
+========================================================================================
+  MEAN (core, n=15)                           0.71  0.79  0.82    94ms
+  MEAN (employment, n=4)                      0.67  0.75  0.88    97ms
+  MEAN (all, n=19)                            0.70  0.79  0.83    95ms
+
+  Latency, p50: 83ms   p95: 196ms
+  Queries run : 19 / 19
+
+  session 1, rewrite run 3 of 4
+
+CaseTally Retrieval Evaluation
+Backend : http://localhost:3001
+top_k   : 5
+rewrite : on
+========================================================================================
+  Query label                                  P@3   R@5   MRR     ms
+----------------------------------------------------------------------------------------
+  First Amendment / civil rights              0.33  0.25  0.50   153ms
+  Patents (Title 35)                          0.67  1.00  1.00   170ms
+  Bankruptcy (Title 11)                       1.00  1.00  1.00    42ms
+  Copyrights (Title 17)                       1.00  1.00  1.00    26ms
+  Internal Revenue (Title 26)                 1.00  1.00  1.00   111ms
+  Crimes (Title 18)                           0.00  0.00  0.00    56ms
+  Immigration (Title 8)                       1.00  1.00  1.00   119ms
+  Commerce / Antitrust (Title 15)             0.67  1.00  1.00    84ms
+  Social Security (Title 42)                  1.00  1.00  1.00   294ms
+  Employment discrimination (Title 42/29/5)   0.33  0.67  1.00    82ms
+  Controlled substances (Title 21)            1.00  1.00  1.00   109ms
+  Firearms (Title 18/26)                      0.00  0.50  0.25    83ms
+  Labor / minimum wage (Title 29/5)           1.00  1.00  1.00   214ms
+  Clean Water Act (Title 33)                  1.00  1.00  1.00   118ms
+  Habeas corpus (Title 28)                    0.67  1.00  0.50    29ms
+----------------------------------------------------------------------------------------
+  Wrongful termination (headline)             0.33  0.50  1.00    49ms
+  Age discrimination (held out)               1.00  1.00  1.00    96ms
+  Pregnancy discrimination (held out)         0.67  1.00  0.50   160ms
+  Union retaliation (held out)                0.00  0.00  0.00   102ms
+========================================================================================
+  MEAN (core, n=15)                           0.71  0.83  0.82   112ms
+  MEAN (employment, n=4)                      0.50  0.62  0.62   101ms
+  MEAN (all, n=19)                            0.67  0.79  0.78   110ms
+
+  Latency, p50: 102ms   p95: 294ms
+  Queries run : 19 / 19
+
+  session 1, rewrite run 4 of 4
+
+CaseTally Retrieval Evaluation
+Backend : http://localhost:3001
+top_k   : 5
+rewrite : on
+========================================================================================
+  Query label                                  P@3   R@5   MRR     ms
+----------------------------------------------------------------------------------------
+  First Amendment / civil rights              0.33  0.50  1.00   781ms
+  Patents (Title 35)                          0.67  1.00  1.00   230ms
+  Bankruptcy (Title 11)                       1.00  1.00  1.00   260ms
+  Copyrights (Title 17)                       1.00  1.00  1.00   121ms
+  Internal Revenue (Title 26)                 1.00  1.00  1.00   193ms
+  Crimes (Title 18)                           0.00  0.00  0.00    82ms
+  Immigration (Title 8)                       1.00  1.00  1.00   148ms
+  Commerce / Antitrust (Title 15)             0.67  1.00  1.00   121ms
+  Social Security (Title 42)                  1.00  1.00  1.00   328ms
+  Employment discrimination (Title 42/29/5)   0.67  0.33  1.00   113ms
+  Controlled substances (Title 21)            1.00  1.00  1.00   130ms
+  Firearms (Title 18/26)                      0.00  0.50  0.25    33ms
+  Labor / minimum wage (Title 29/5)           1.00  1.00  1.00   149ms
+  Clean Water Act (Title 33)                  1.00  1.00  1.00   133ms
+  Habeas corpus (Title 28)                    0.67  1.00  0.50    33ms
+----------------------------------------------------------------------------------------
+  Wrongful termination (headline)             0.33  0.50  1.00   121ms
+  Age discrimination (held out)               1.00  1.00  1.00    88ms
+  Pregnancy discrimination (held out)         0.67  1.00  0.50   136ms
+  Union retaliation (held out)                0.00  0.50  0.20   175ms
+========================================================================================
+  MEAN (core, n=15)                           0.73  0.82  0.85   190ms
+  MEAN (employment, n=4)                      0.50  0.75  0.68   130ms
+  MEAN (all, n=19)                            0.68  0.81  0.81   177ms
+
+  Latency, p50: 133ms   p95: 781ms
+  Queries run : 19 / 19
+
+--------------------------------------------------------------------------
+SESSION 1, MODE 3 of 3: issue decomposition, the live answer path, 3 runs
+--------------------------------------------------------------------------
+
+3 or 4 sub-queries per question, each searched separately, rankings fused, then the 8
+chunks selected. The ctx column is expected titles present in those 8 chunks.
+
+CaseTally Retrieval Evaluation, decomposition mode
+top_k scored     : 5 (same slice the other modes score)
+candidate pool   : 30   context sent: 8
+runs             : 3   sleep between Groq calls: 7.5s
+================================================================================================
+
+--- run 1 of 3 ---
+  Query label                                  P@3   R@5   MRR    ctx      ms
+------------------------------------------------------------------------------------------------
+  First Amendment / civil rights              0.33  0.25  0.50    2/4    363ms
+  Patents (Title 35)                          0.67  1.00  1.00    1/1    216ms
+  Bankruptcy (Title 11)                       0.33  1.00  0.33    1/1    400ms
+  Copyrights (Title 17)                       1.00  1.00  1.00    1/1    263ms
+  Internal Revenue (Title 26)                 1.00  1.00  1.00    1/1    426ms
+  Crimes (Title 18)                           0.00  0.00  0.00    0/1    130ms
+  Immigration (Title 8)                       1.00  1.00  1.00    1/1    150ms
+  Commerce / Antitrust (Title 15)             0.67  1.00  0.50    1/1    242ms
+  Social Security (Title 42)                  0.67  1.00  1.00    1/1    471ms
+  Employment discrimination (Title 42/29/5)   0.33  0.33  0.50    1/3    502ms
+  Controlled substances (Title 21)            0.67  1.00  1.00    1/1    428ms
+  Firearms (Title 18/26)                      1.00  1.00  1.00    2/2    430ms
+  Labor / minimum wage (Title 29/5)           0.67  1.00  1.00    2/2    267ms
+  Clean Water Act (Title 33)                  0.00  1.00  0.25    1/1    564ms
+  Habeas corpus (Title 28)                    0.33  1.00  0.50    2/2     75ms
+  Wrongful termination (headline)             0.67  1.00  1.00    2/2    217ms
+  Age discrimination (held out)               0.67  1.00  1.00    2/2    194ms
+  Pregnancy discrimination (held out)         0.67  1.00  0.50    2/2    115ms
+  Union retaliation (held out)                0.67  0.50  1.00    1/2    583ms
+
+--- run 2 of 3 ---
+  Query label                                  P@3   R@5   MRR    ctx      ms
+------------------------------------------------------------------------------------------------
+  First Amendment / civil rights              0.33  0.25  0.50    2/4    228ms
+  Patents (Title 35)                          0.67  1.00  1.00    1/1    306ms
+  Bankruptcy (Title 11)                       0.33  1.00  0.33    1/1    156ms
+  Copyrights (Title 17)                       1.00  1.00  1.00    1/1    113ms
+  Internal Revenue (Title 26)                 1.00  1.00  1.00    1/1    258ms
+  Crimes (Title 18)                           0.00  0.00  0.00    0/1    169ms
+  Immigration (Title 8)                       1.00  1.00  1.00    1/1    258ms
+  Commerce / Antitrust (Title 15)             0.67  1.00  0.50    1/1    260ms
+  Social Security (Title 42)                  0.67  1.00  1.00    1/1    276ms
+  Employment discrimination (Title 42/29/5)   0.33  0.33  0.50    1/3    349ms
+  Controlled substances (Title 21)            0.67  1.00  1.00    1/1    265ms
+  Firearms (Title 18/26)                      1.00  1.00  1.00    2/2    433ms
+  Labor / minimum wage (Title 29/5)           0.67  1.00  1.00    2/2    415ms
+  Clean Water Act (Title 33)                  1.00  1.00  1.00    1/1    299ms
+  Habeas corpus (Title 28)                    0.33  1.00  0.50    2/2    102ms
+  Wrongful termination (headline)             0.67  1.00  0.50    2/2    201ms
+  Age discrimination (held out)               0.67  1.00  1.00    2/2    127ms
+  Pregnancy discrimination (held out)         0.67  1.00  0.50    2/2    405ms
+  Union retaliation (held out)                0.67  1.00  1.00    1/2    305ms
+
+--- run 3 of 3 ---
+  Query label                                  P@3   R@5   MRR    ctx      ms
+------------------------------------------------------------------------------------------------
+  First Amendment / civil rights              0.33  0.25  0.50    2/4    121ms
+  Patents (Title 35)                          0.67  1.00  1.00    1/1    324ms
+  Bankruptcy (Title 11)                       0.33  1.00  0.33    1/1    151ms
+  Copyrights (Title 17)                       1.00  1.00  1.00    1/1    102ms
+  Internal Revenue (Title 26)                 1.00  1.00  1.00    1/1    194ms
+  Crimes (Title 18)                           0.00  0.00  0.00    0/1    124ms
+  Immigration (Title 8)                       1.00  1.00  1.00    1/1    200ms
+  Commerce / Antitrust (Title 15)             0.67  1.00  0.50    1/1    199ms
+  Social Security (Title 42)                  0.67  1.00  1.00    1/1    256ms
+  Employment discrimination (Title 42/29/5)   0.67  0.67  1.00    3/3    236ms
+  Controlled substances (Title 21)            0.67  1.00  1.00    1/1    242ms
+  Firearms (Title 18/26)                      0.33  0.50  0.50    1/2    217ms
+  Labor / minimum wage (Title 29/5)           0.67  1.00  1.00    2/2    226ms
+  Clean Water Act (Title 33)                  0.00  1.00  0.25    1/1    314ms
+  Habeas corpus (Title 28)                    0.33  1.00  0.50    2/2    136ms
+  Wrongful termination (headline)             0.67  1.00  1.00    2/2    123ms
+  Age discrimination (held out)               0.67  1.00  1.00    2/2    203ms
+  Pregnancy discrimination (held out)         0.67  1.00  0.50    2/2    161ms
+  Union retaliation (held out)                0.67  0.50  1.00    1/2    649ms
+
+  raw records written to /tmp/decompose.json
+
+================================================================================================
+
+  core group, 15 queries x 3 runs = 45 observations
+    p3   mean 0.593   per-run means [0.578, 0.644, 0.556]   spread 0.089
+    r5   mean 0.835   per-run means [0.839, 0.839, 0.828]   spread 0.011
+    rr   mean 0.722   per-run means [0.706, 0.756, 0.706]   spread 0.050
+    context: 55/69 expected titles present (0.797)   all titles: 36/45   no titles: 3/45
+
+  employment group, 4 queries x 3 runs = 12 observations
+    p3   mean 0.667   per-run means [0.667, 0.667, 0.667]   spread 0.000
+    r5   mean 0.917   per-run means [0.875, 1.0, 0.875]   spread 0.125
+    rr   mean 0.833   per-run means [0.875, 0.75, 0.875]   spread 0.125
+    context: 21/24 expected titles present (0.875)   all titles: 9/12   no titles: 0/12
+
+
+==========================================================================
+SESSION 2 PER-QUERY OUTPUT, 2026-10-03, from about 05:03 UTC
+==========================================================================
+
+--------------------------------------------------------------------------
+SESSION 2, MODE 1 of 3: plain hybrid search, no rewrite, no decomposition
+--------------------------------------------------------------------------
 
 CaseTally Retrieval Evaluation
 Backend : http://localhost:3001
@@ -161,16 +485,11 @@ against _select_context(results, 8, 2, query) exactly as chat.py calls it.
   Pregnancy discrimination (held out)               2/2
   Union retaliation (held out)                      1/2
 
+--------------------------------------------------------------------------
+SESSION 2, MODE 2 of 3: single query rewrite, then plain hybrid search, 4 runs
+--------------------------------------------------------------------------
 
-======================================================================
-MODE 2 of 3: single query rewrite, then plain hybrid search
-======================================================================
-
-The fallback the answer path uses when decomposition is unavailable. 4 runs.
-
-----------------------------------------------------------------------
-run 1 of 4
-----------------------------------------------------------------------
+  session 2, rewrite run 1 of 4
 
 CaseTally Retrieval Evaluation
 Backend : http://localhost:3001
@@ -207,9 +526,7 @@ rewrite : on
   Latency, p50: 91ms   p95: 186ms
   Queries run : 19 / 19
 
-----------------------------------------------------------------------
-run 2 of 4
-----------------------------------------------------------------------
+  session 2, rewrite run 2 of 4
 
 CaseTally Retrieval Evaluation
 Backend : http://localhost:3001
@@ -246,9 +563,7 @@ rewrite : on
   Latency, p50: 89ms   p95: 248ms
   Queries run : 19 / 19
 
-----------------------------------------------------------------------
-run 3 of 4
-----------------------------------------------------------------------
+  session 2, rewrite run 3 of 4
 
 CaseTally Retrieval Evaluation
 Backend : http://localhost:3001
@@ -285,9 +600,7 @@ rewrite : on
   Latency, p50: 81ms   p95: 195ms
   Queries run : 19 / 19
 
-----------------------------------------------------------------------
-run 4 of 4
-----------------------------------------------------------------------
+  session 2, rewrite run 4 of 4
 
 CaseTally Retrieval Evaluation
 Backend : http://localhost:3001
@@ -324,13 +637,12 @@ rewrite : on
   Latency, p50: 109ms   p95: 305ms
   Queries run : 19 / 19
 
-
-======================================================================
-MODE 3 of 3: issue decomposition, the live answer path
-======================================================================
+--------------------------------------------------------------------------
+SESSION 2, MODE 3 of 3: issue decomposition, the live answer path, 3 runs
+--------------------------------------------------------------------------
 
 3 or 4 sub-queries per question, each searched separately, rankings fused, then the 8
-chunks selected. The ctx column is expected titles present in those 8 chunks. 3 runs.
+chunks selected. The ctx column is expected titles present in those 8 chunks.
 
 CaseTally Retrieval Evaluation, decomposition mode
 top_k scored     : 5 (same slice the other modes score)
@@ -424,14 +736,12 @@ runs             : 3   sleep between Groq calls: 7.5s
     context: 21/24 expected titles present (0.875)   all titles: 9/12   no titles: 0/12
 
 
-======================================================================
-NOTES FROM THIS MEASUREMENT
-======================================================================
+==========================================================================
+NOTES
+==========================================================================
 
-Decomposition stability: 14 of 19 queries produced identical sub-queries in
-all 3 runs. The rest varied, which is why this mode is reported as a mean.
-
-Sub-queries produced per question: [3] (the prompt allows 3 or 4).
+Decomposition stability: within a session, 12 of 19 queries produced identical
+sub-queries across its 3 runs in session 1 and 14 of 19 in session 2. The rest varied.
 
 Precision@3 is partly capped by construction for decomposition. It always divides by 3,
 while a fused multi-issue ranking deliberately interleaves issues, so when only one of
@@ -443,9 +753,8 @@ large, so a pension section in Title 29 counts as relevant for an unfair dismiss
 question. The employment group is a regression tripwire, not a quality measure, and at 4
 queries every single query moves its mean by 0.25.
 
-Latency is not comparable across modes. Plain and rewrite are server-reported took_ms
-over a port-forward for one search. Decompose is wall time for 3 concurrent searches
-in-process, and excludes the decompose LLM call that precedes them.
+Em dashes in the harness output have been normalised to plain punctuation. The harness
+itself no longer emits them, so later regenerations need no normalising.
 
 Prior baseline, for reference: an earlier run against 22 of 53 titles (32,969 chunks)
 scored P@3 0.31, R@5 0.34, MRR 0.39, with 7 queries at 0.00 purely because their titles

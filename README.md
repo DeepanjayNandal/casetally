@@ -191,6 +191,7 @@ their own SSE error event with a message the UI can show.
 - `GET /health/ready`: runs a real `SELECT 1` and returns 503 if it fails, so a pod that cannot reach Postgres is pulled out of the Service instead of serving errors
 - Citation guard: after the answer finishes, every `N U.S.C. § M` it cites is matched against the sections actually supplied. Anything unmatched is emitted as an `unverified` list and flagged in the UI, so a hallucinated or mis-transcribed citation is visible instead of passing as sourced
 - Explicit SSE error events for retrieval failing, every sub-query failing, no results, and a stream returning zero tokens. Each one carries a message the UI renders, so none of these can show up as a blank answer or a spinner that never resolves
+- Errors are masked for users: every failure returns a friendly message and a short reference id, and the full exception with its traceback stays in the server logs under that same id. No exception text, SQL, hostname or path reaches the browser, including from `/health/ready`, which is exposed through the ingress. A global handler covers unexpected 500s so nothing escapes unmasked
 - Vector search degrades to full-text-only when the embedding model is unavailable (the package failed to import, or `SEARCH_EMBEDDING_ENABLED=false`), and the response reports `embedding_used` so the path taken is visible. This covers the model being *unavailable*, not *failing*: a load or encode error mid-request propagates as a 500
 
 ### `casetally-db`: PostgreSQL 16 + pgvector 0.8.6

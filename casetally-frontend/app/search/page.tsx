@@ -37,6 +37,10 @@ interface Turn {
   isLoading: boolean
   isStreaming: boolean
   error: string | null
+  // The backend's correlation id for this failure. Shown to the user as a
+  // reference so a report can be traced in the server log. The payload carries
+  // no exception text at all, which is the point: this is all the client gets.
+  errorRef: string | null
   tookMs: number | null
   // Section numbers the answer cited that were NOT in the retrieved excerpts.
   // A fabricated citation is indistinguishable from a real one to a reader, so it
@@ -90,6 +94,7 @@ function SearchResults() {
       isLoading: true,
       isStreaming: false,
       error: null,
+      errorRef: null,
       tookMs: null,
       unverifiedCitations: [],
     }
@@ -112,10 +117,23 @@ function SearchResults() {
       })
 
       if (!response.ok) {
+        // A failure before the stream opens comes back as JSON from the
+        // backend's handlers, carrying a message and an error_id. Read them if
+        // present so the user still gets a reference to quote.
+        let ref: string | null = null
+        let serverMessage: string | null = null
+        try {
+          const body = await response.json()
+          ref = typeof body?.error_id === "string" ? body.error_id : null
+          serverMessage = typeof body?.message === "string" ? body.message : null
+        } catch {
+          // Not JSON, so there is nothing to read. Fall through to the generic text.
+        }
+        if (ref) updateTurn(turnId, { errorRef: ref })
         throw new Error(
           response.status === 429
             ? "Rate limited. Please wait a moment and try again."
-            : `Server error (${response.status}). Please try again.`
+            : serverMessage || `Server error (${response.status}). Please try again.`
         )
       }
 
@@ -170,6 +188,9 @@ function SearchResults() {
                 isLoading: false,
                 isStreaming: false,
                 error: json.message || "Something went wrong. Please try again.",
+                // Only ever the id. The event has no detail field to render,
+                // and nothing here reads one.
+                errorRef: json.error_id || null,
               })
             }
             if (json.type === "text" && json.chunk) {
@@ -328,7 +349,7 @@ function SearchResults() {
                   style={{ padding: "28px 32px", borderRadius: "12px", minHeight: "120px" }}
                 >
                   {turn.error ? (
-                    <ErrorCard message={turn.error} onRetry={() => runSearch(turn.query)} />
+                    <ErrorCard message={turn.error} reference={turn.errorRef} onRetry={() => runSearch(turn.query)} />
                   ) : turn.isLoading ? (
                     <SkeletonAnswer />
                   ) : !turn.isStreaming && !turn.answer.trim() ? (
@@ -499,7 +520,7 @@ function SearchResults() {
   )
 }
 
-function ErrorCard({ message, onRetry }: { message: string; onRetry: () => void }) {
+function ErrorCard({ message, reference, onRetry }: { message: string; reference?: string | null; onRetry: () => void }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "16px", padding: "24px 0", textAlign: "center" }}>
       <AlertCircle size={48} style={{ color: "hsl(0 65% 55%)", opacity: 0.9 }} />
@@ -510,6 +531,11 @@ function ErrorCard({ message, onRetry }: { message: string; onRetry: () => void 
         <p style={{ fontSize: "14px", color: "hsl(var(--text-muted))", fontFamily: "var(--font-inter), system-ui, sans-serif" }}>
           {message || "Unable to connect to the search service. Please try again."}
         </p>
+        {reference && (
+          <p style={{ fontSize: "12px", color: "hsl(var(--text-muted))", opacity: 0.75, marginTop: "6px", fontFamily: "var(--font-mono), ui-monospace, monospace" }}>
+            Reference: {reference}
+          </p>
+        )}
       </div>
       <button
         type="button"

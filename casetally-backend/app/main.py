@@ -1,13 +1,15 @@
 ﻿import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.api.search import router as search_router
 from app.db import SessionLocal
 from app.dependencies import search_service
+from app.errors import client_error, report
 from app.routers.chat import router as chat_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -62,15 +64,45 @@ def health_live():
 # Readiness: answers "should this pod get traffic", so it does check the
 # database. A pod that cannot reach Postgres cannot answer a search, and
 # returning 503 here takes it out of the Service until it can.
+#
+# The failure body used to be f"Database unavailable: {exc}", which put the
+# driver, the Postgres host and the port into a response served through the
+# ingress at /health/ready. The kubelet only reads the status code, so nothing
+# needed that text; it is in the log instead, under the id the body carries.
 @app.get("/health/ready")
 def health_ready():
     try:
         db = SessionLocal()
-        db.execute(text("SELECT 1"))
-        db.close()
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}")
+        try:
+            db.execute(text("SELECT 1"))
+        finally:
+            db.close()
+    except Exception:
+        error_id = report(logger, "readiness probe failed")
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unavailable", **client_error("Database unavailable.", error_id)},
+        )
     return {"status": "ok"}
+
+
+# Last line of defence. Anything that reaches here is a bug rather than a
+# handled condition, and Starlette's default would return the traceback only
+# with debug on, but it would also return nothing an operator can correlate.
+# This keeps the generic body and attaches the id that the log entry carries.
+#
+# Deliberately not registered for HTTPException: those are raised by this code
+# with messages written for users, and masking them would turn a useful 400 or
+# 404 into a mystery.
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    error_id = report(logger, "unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content=client_error(
+            "Something went wrong on our side. Please try again.", error_id
+        ),
+    )
 
 
 # search_router serves /v1/search and /v1/rewrite, chat_router serves

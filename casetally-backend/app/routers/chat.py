@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.db import SessionLocal, get_db
 from app.dependencies import groq_service, search_service
+from app.errors import client_error, report
 from app.models import LegalArtifact
 from app.services.groq_service import _terms
 from app.services.search import normalize_citation
@@ -68,7 +69,7 @@ def _event(data: str) -> str:
     return f"data: {data}\n\n"
 
 
-def _error_event(message: str, detail: str = "") -> str:
+def _error_event(message: str, error_id: str) -> str:
     """An explicit failure the client can show.
 
     Everything in this endpoint streams over a 200 response, so a failure after
@@ -76,8 +77,14 @@ def _error_event(message: str, detail: str = "") -> str:
     own, a retrieval outage or an empty model response reached the browser as a
     valid stream containing no text: a blank answer, no error, and a spinner that
     never stopped. The client needs to be told, not left to infer silence.
+
+    This used to carry a `detail` field holding `str(exc)`. The UI never rendered
+    it, but it still crossed the wire and was readable in DevTools, which leaked
+    the database driver, host and port on a failed query. The client now gets the
+    message and an id; the exception stays in the log under the same id. See
+    app.errors.
     """
-    return _event(json.dumps({"type": "error", "message": message, "detail": detail[:300]}))
+    return _event(json.dumps({"type": "error", **client_error(message, error_id)}))
 
 
 # "17 U.S.C. § 504", "29 USC 623", "18 U.S.C. §922(g)" and so on.
@@ -335,12 +342,12 @@ def _stream(query: str, history: List[Dict[str, Any]]):
                     weight_bm25=0.5,
                     weight_vector=0.5,
                 )
-        except Exception as exc:
-            logger.exception("retrieval failed for %r", query)
+        except Exception:
+            error_id = report(logger, "retrieval failed for %r", query)
             yield _error_event(
                 "Search is temporarily unavailable, so no statutes could be "
                 "retrieved. Please try again in a moment.",
-                f"{type(exc).__name__}: {exc}",
+                error_id,
             )
             yield _event("[DONE]")
             return
@@ -352,11 +359,18 @@ def _stream(query: str, history: List[Dict[str, Any]]):
         errors = results.get("errors") or []
         n_queries = results.get("n_queries") or 0
         if errors and n_queries and len(errors) >= n_queries:
-            logger.error("all %d sub-queries failed for %r: %s", n_queries, query, errors[:3])
+            # exc_info=False: search_multi already logged each sub-query's
+            # traceback. The texts it collected are internal and stay here.
+            error_id = report(
+                logger,
+                "all %d sub-queries failed for %r: %s",
+                n_queries, query, errors[:3],
+                exc_info=False,
+            )
             yield _error_event(
                 "Search is temporarily unavailable, so no statutes could be "
                 "retrieved. Please try again in a moment.",
-                "; ".join(errors[:2]),
+                error_id,
             )
             yield _event("[DONE]")
             return
@@ -395,11 +409,21 @@ def _stream(query: str, history: List[Dict[str, Any]]):
         # outage above, and it still has to be said out loud rather than
         # producing an empty answer.
         if not chunks:
-            logger.info("no chunks retrieved for %r", query)
+            # Reported to the client like a failure, but it is not one: the
+            # question legitimately matched nothing. Logged at INFO so it stays
+            # traceable by id without burying real faults in the error log.
+            error_id = report(
+                logger,
+                "no chunks retrieved for %r",
+                query,
+                exc_info=False,
+                level=logging.INFO,
+            )
             yield _error_event(
                 "No statutes in this corpus matched that question. This corpus "
                 "holds federal statutes only, so questions governed by state law "
-                "will not be found here."
+                "will not be found here.",
+                error_id,
             )
             yield _event("[DONE]")
             return
@@ -417,14 +441,14 @@ def _stream(query: str, history: List[Dict[str, Any]]):
                 ):
                     answer_parts.append(token)
                     yield _event(json.dumps({"type": "text", "chunk": token}))
-            except Exception as exc:
+            except Exception:
                 stream_failed = True
-                logger.warning("Groq stream failed: %s", exc, exc_info=True)
+                error_id = report(logger, "Groq stream failed for %r", query)
                 yield _error_event(
                     "The AI assistant is temporarily unavailable, so the answer "
                     "could not be written. The statutes found for your question "
                     "are listed below.",
-                    f"{type(exc).__name__}: {exc}",
+                    error_id,
                 )
             # A stream can finish successfully having emitted nothing at all,
             # usually because the reasoning budget consumed max_tokens. That is
@@ -432,10 +456,18 @@ def _stream(query: str, history: List[Dict[str, Any]]):
             # reported when the stream did not already fail, so one failure does
             # not produce two error events.
             if not stream_failed and not "".join(answer_parts).strip():
-                logger.error("empty answer for %r (chunks=%d)", query, len(chunks))
+                # No exception here, the stream simply produced nothing, so a
+                # traceback would record this frame and imply a crash.
+                error_id = report(
+                    logger,
+                    "empty answer for %r (chunks=%d)",
+                    query, len(chunks),
+                    exc_info=False,
+                )
                 yield _error_event(
                     "The AI assistant returned an empty answer. Please try again. "
-                    "The statutes found for your question are listed below."
+                    "The statutes found for your question are listed below.",
+                    error_id,
                 )
         else:
             for result in chunks:
@@ -506,7 +538,20 @@ def get_artifact_file(artifact_id: int, db: Session = Depends(get_db)):
 
     file_path = artifact.artifact_metadata.get("file_path", "")
     if not file_path or not os.path.isfile(file_path):
-        raise HTTPException(status_code=500, detail="File not found on disk")
+        # The path is a server-side detail and stays in the log. The client is
+        # told the document is unavailable and given the id to quote.
+        error_id = report(
+            logger,
+            "artifact %s points at a missing file: %r",
+            artifact_id, file_path,
+            exc_info=False,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=client_error(
+                "That source document is temporarily unavailable.", error_id
+            ),
+        )
 
     return FileResponse(
         path=file_path,
